@@ -93,3 +93,28 @@ branch=claude/repo-exploration-spec-yy93it
 repo_root=/home/user/GhostTrace
 worktree=main
 parent_agent=none
+
+## 2026-10-25T01:20:00Z Implement loader.py and identity.py + identity tests
+
+User Prompt (verbatim, secrets redacted):
+Implement code/loader.py and code/identity.py. Keep a deterministic core; no LLM here.
+- loader: load every CSV in dataset/ into clean typed structures, and index the evidence manifest (evidence_files.csv) + all media/evidence file paths. Derive system names from the data; never hardcode them.
+- identity: for each request (keyed by email), build the FULL identifier set for the user: current and historical emails, internal user_ids, phone numbers, names/aliases, and email_hash (compute it the way the rules/data use it). Resolve merged/renamed accounts by following chains (old email -> new email -> new user_id) using user_identities.csv + user_audit_log.csv. Return the identifier set plus provenance (which row proved each identifier).
+Write tests in tests/ for: alias chains, email changes, phone changes, and merged accounts. Run the tests and show results. Print the resolved identifier set (with provenance) for the first 3 requests. Stop for review.
+
+Agent Response Summary:
+Verified email_hash = sha256(email) hexdigest, and that the audit log carries email/email_hash/phone changes (no name changes). Implemented loader.py: typed loaders for all 8 CSVs into Dataset with indexes (evidence_by_id, identity_by_user_id, media_files/text_files, evidence_path); no hardcoded systems/filenames. Implemented identity.py: IdentityResolver precomputes current+historical email->user_id maps (current wins on collision for decoy isolation) and per-user audit index; resolve(email) follows rename chains and returns an Identity with full emails/phones/email_hashes/names/user_id plus per-value Provenance (user_identities.csv row, user_audit_log.csv audit_id with old/new role, computed sha256, or request). match_keys() reuses discovery.normalize_tokens for consistent matching. Wrote 7 tests (current/historical email, alias chain, phone change, authoritative hash change, merged/renamed decoy isolation, unknown email) — all pass (fixed one test that used sub-7-digit phones, which correctly produce no tel: token). Printed resolved identifier sets + provenance for first 3 requests; case_34 exercises a full email/hash/phone change chain with audit-row provenance. No LLM.
+
+Actions:
+* Rewrote code/ghostaudit/loader.py (typed CSV loaders + Dataset indexes)
+* Rewrote code/ghostaudit/identity.py (IdentityResolver, Identity, Provenance, chain resolution)
+* Rewrote code/tests/test_identity.py (7 scenario tests) — installed pytest; 7 passed
+* Added .pytest_cache/ to .gitignore
+
+Context:
+tool=Claude Code
+model=claude-opus-4-8
+branch=claude/repo-exploration-spec-yy93it
+repo_root=/home/user/GhostTrace
+worktree=main
+parent_agent=none

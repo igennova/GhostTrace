@@ -38,8 +38,8 @@ from pathlib import Path
 from . import discovery
 from .loader import Dataset, EvidenceFile
 
-PROMPT_VERSION = "vision_v1"
-_PROMPT_PATH = Path(__file__).resolve().parent.parent / "prompts" / "vision_v1.txt"
+PROMPT_VERSION = "vision_v3"
+_PROMPT_PATH = Path(__file__).resolve().parent.parent / "prompts" / "vision_v3.txt"
 
 # Approximate USD pricing per 1M tokens, for the usage report (override in config).
 _PRICING = {
@@ -54,6 +54,27 @@ _RE_EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 _RE_HASH = re.compile(r"^[0-9a-f]{64}$")
 _RE_USER_ID = re.compile(r"^[a-z][a-z_]*_\d+$", re.IGNORECASE)
 _RE_NAME = re.compile(r"^[^\d@]{2,}$")
+_RE_RESOURCE_ID = re.compile(r"^[a-z][a-z_]*_\d+$")
+
+_IDENTIFIER_KEYS = ("email", "phone", "name", "user_id", "email_hash")
+
+#: Model-reported record state -> observed state used by discovery.
+_STATE_MAP = {
+    "DELETED": discovery.STATE_ABSENT,
+    "REDACTED": discovery.STATE_REDACTED,
+    "ANONYMIZED": discovery.STATE_ANONYMIZED,
+    "ENABLED": discovery.STATE_ACTIVE,
+    "DISABLED": discovery.STATE_DISABLED,
+    "RESTORE_ALLOWED": discovery.STATE_ACTIVE,
+    "RESTORE_BLOCKED": discovery.STATE_BLOCKED,
+}
+#: Categories whose state is a flag (enabled / restore allowed); a media row
+#: counts as evidence of their state only when the flag is explicitly shown.
+_FLAG_STATE_CATEGORIES = {"DATA_FLOW", "BACKUP_ARCHIVE"}
+_FLAG_STATES = {"ENABLED", "DISABLED", "RESTORE_ALLOWED", "RESTORE_BLOCKED"}
+#: States that carry meaning even when a record shows no identifiers.
+_SELF_DESCRIBING_STATES = {"DELETED", "ENABLED", "DISABLED",
+                           "RESTORE_ALLOWED", "RESTORE_BLOCKED"}
 
 
 @dataclass
@@ -69,6 +90,17 @@ class ExtractedIdentifier:
 
 
 @dataclass
+class ExtractedRecord:
+    """One resource shown in a media file, with its own verified identifiers."""
+
+    resource_id: str
+    identifiers: dict[str, str] = field(default_factory=dict)
+    status: str = ""
+    state: str = "UNKNOWN"
+    confidence: float = 0.0
+
+
+@dataclass
 class MediaExtraction:
     """Everything recovered from one media file."""
 
@@ -79,6 +111,8 @@ class MediaExtraction:
     cached: bool = False
     identifiers: list[ExtractedIdentifier] = field(default_factory=list)
     low_confidence: list[ExtractedIdentifier] = field(default_factory=list)
+    records: list[ExtractedRecord] = field(default_factory=list)
+    rejected: list[str] = field(default_factory=list)  # why records were dropped
     error: str = ""
     prompt_tokens: int = 0
     completion_tokens: int = 0
@@ -88,7 +122,7 @@ class MediaExtraction:
 class VisionConfig:
     """Model, backend, and I/O settings (no secrets)."""
 
-    model: str = "gpt-4o-mini"
+    model: str = "gpt-4o"  # small ids in dense screenshots need the full model
     backend: str = "openai"            # "openai" or "local"
     api_key_env: str = "OPENAI_API_KEY"
     base_url_env: str = "OPENAI_BASE_URL"
@@ -162,7 +196,8 @@ class VisionExtractor:
         path = Path(dataset_dir) / evidence.file_path
         content_hash = _file_hash(path)
         cached = self._load_cache(evidence.file_id, content_hash)
-        if cached is not None:
+        if cached is not None and not (cached.backend == "local"
+                                       and self.config.backend != "local"):
             cached.cached = True
             return cached
 
@@ -256,11 +291,18 @@ class VisionExtractor:
                 file_id=evidence.file_id, path=str(path), backend="local",
                 error="image requires a VLM backend (no local OCR)",
             )
-        idents = _regex_identifiers(_pdf_text(path))
+        text = _pdf_text(path)
+        if not text.strip():
+            return MediaExtraction(
+                file_id=evidence.file_id, path=str(path), backend="local",
+                error="no extractable PDF text (pypdf missing or scanned PDF)",
+            )
+        idents = _regex_identifiers(text)
         verified, low = _partition(idents)
         extraction = MediaExtraction(
             file_id=evidence.file_id, path=str(path), backend="local",
             model="regex", identifiers=verified, low_confidence=low,
+            records=_regex_records(text, verified),
         )
         self._log_usage(evidence.file_id, extraction, 0.0)
         return extraction
@@ -272,25 +314,30 @@ class VisionExtractor:
     ) -> MediaExtraction:
         """Parse strict-JSON model output into a verified extraction."""
         idents: list[ExtractedIdentifier] = []
+        raw_records: list[dict] = []
         try:
             payload = json.loads(content)
-            for item in payload.get("identifiers", []):
-                idents.append(ExtractedIdentifier(
-                    type=str(item.get("type", "")).lower(),
-                    value=str(item.get("value", "")),
-                    confidence=float(item.get("confidence", 0.0)),
-                    location=str(item.get("location", "")),
-                ))
-        except (json.JSONDecodeError, TypeError, ValueError) as exc:
+            raw_records = [r for r in payload.get("records", []) if isinstance(r, dict)]
+            for rec in raw_records:
+                conf = float(rec.get("confidence", 0.0))
+                for kind, value in (rec.get("identifiers") or {}).items():
+                    idents.append(ExtractedIdentifier(
+                        type=str(kind).lower(), value=str(value), confidence=conf,
+                        location=str(rec.get("resource_id", "")),
+                    ))
+        except (json.JSONDecodeError, TypeError, ValueError, AttributeError) as exc:
             return MediaExtraction(
                 file_id=evidence.file_id, path=str(path), backend=backend,
                 model=model, error=f"bad JSON from model: {exc}",
                 prompt_tokens=prompt_tokens, completion_tokens=completion_tokens,
             )
         verified, low = _partition(idents)
+        pdf_text = _pdf_text(path) if evidence.suffix == ".pdf" else None
+        records, rejected = _verify_records(raw_records, pdf_text)
         return MediaExtraction(
             file_id=evidence.file_id, path=str(path), backend=backend, model=model,
             identifiers=verified, low_confidence=low,
+            records=records, rejected=rejected,
             prompt_tokens=prompt_tokens, completion_tokens=completion_tokens,
         )
 
@@ -348,30 +395,46 @@ class VisionExtractor:
 # Index integration
 # ---------------------------------------------------------------------------
 def extraction_to_observations(
-    extraction: MediaExtraction, evidence: EvidenceFile
+    extraction: MediaExtraction,
+    evidence: EvidenceFile,
+    prefix_cat: dict[str, str],
+    prefix_sys: dict[str, str],
 ) -> list[discovery.Observation]:
-    """Convert verified identifiers from one file into index observations."""
-    if not extraction.identifiers:
-        return []
-    ids: dict[str, str] = {}
-    for ident in extraction.identifiers:
-        key = {"email": "email", "phone": "phone", "name": "name",
-               "user_id": "user_id", "email_hash": "email_hash"}.get(ident.type)
-        if key:
-            ids[key] = ident.value
-    resource_id = ids.get("user_id") or extraction.file_id
-    return [discovery.Observation(
-        evidence_id=extraction.file_id,
-        origin=evidence.origin,
-        system_id=evidence.origin,  # media is attributed to its capture origin
-        resource_id=resource_id,
-        data_category="",  # unknown from a document alone
-        observed_state=discovery.STATE_EXPOSED,
-        observed_at=evidence.captured_at,
-        identifiers=ids,
-        source_path=evidence.file_path,
-        table_or_collection="media",
-    )]
+    """Convert verified records from one file into index observations.
+
+    A record's system and category come from the resource-id prefix maps the
+    text corpus established (``account_`` -> ``account_service`` /
+    ``USER_PROFILE``); a record whose prefix the corpus never labels is
+    dropped rather than guessed. A support record that *is* a PDF document is
+    the ticket's attachment, so it is categorized as ``SUPPORT_ATTACHMENT``.
+    """
+    obs: list[discovery.Observation] = []
+    for rec in extraction.records:
+        prefix = discovery._resource_prefix(rec.resource_id)
+        system_id = prefix_sys.get(prefix)
+        category = prefix_cat.get(prefix)
+        if not system_id or not category:
+            continue
+        if category == "SUPPORT_MESSAGE" and evidence.suffix == ".pdf":
+            category = "SUPPORT_ATTACHMENT"
+        if category in _FLAG_STATE_CATEGORIES and rec.state.upper() not in _FLAG_STATES:
+            continue  # its state is a flag the screen did not show (link only)
+        ids = dict(rec.identifiers)
+        state = _STATE_MAP.get(rec.state.upper()) or discovery._state_from_identifiers(ids)
+        obs.append(discovery.Observation(
+            evidence_id=extraction.file_id,
+            origin=evidence.origin,
+            system_id=system_id,
+            resource_id=rec.resource_id,
+            data_category=category,
+            observed_state=state,
+            observed_at=evidence.captured_at,
+            identifiers=ids,
+            source_path=evidence.file_path,
+            table_or_collection="media",
+            captured_at=evidence.captured_at,
+        ))
+    return obs
 
 
 def integrate_media(
@@ -379,14 +442,105 @@ def integrate_media(
     extractions: list[MediaExtraction],
     dataset: Dataset,
 ) -> discovery.EvidenceIndex:
-    """Merge verified media extractions into the shared evidence index."""
+    """Merge verified media records into the shared evidence index."""
+    prefix_cat, prefix_sys = _prefix_maps(index, dataset)
     by_id = dataset.evidence_by_id()
     new_obs: list[discovery.Observation] = []
     for extraction in extractions:
         evidence = by_id.get(extraction.file_id)
         if evidence is not None:
-            new_obs.extend(extraction_to_observations(extraction, evidence))
+            new_obs.extend(extraction_to_observations(
+                extraction, evidence, prefix_cat, prefix_sys))
+        # Every verified record links its identifiers to its resource id, so
+        # text observations of that resource (e.g. a backup's restore flag)
+        # are attributed to the subject even when the screen showed no state.
+        for rec in extraction.records:
+            if discovery._resource_prefix(rec.resource_id) not in prefix_sys:
+                continue
+            for token in discovery._match_tokens_for_record(rec.identifiers):
+                linked = index.token_to_resources.setdefault(token, [])
+                if rec.resource_id not in linked:
+                    linked.append(rec.resource_id)
     return discovery.add_observations(index, new_obs)
+
+
+def _prefix_maps(
+    index: discovery.EvidenceIndex, dataset: Dataset
+) -> tuple[dict[str, str], dict[str, str]]:
+    """Resource-prefix -> category / system maps for media records.
+
+    Primarily learned from the labeled text corpus. For a prefix the corpus
+    never labels, the system falls back to the activity stream's majority
+    ``target_system`` for that prefix, and the category to the single policy
+    category named after the prefix (``marketing`` -> ``MARKETING_PROFILE``).
+    """
+    from collections import Counter, defaultdict
+    prefix_cat, prefix_sys = discovery._learn_maps(
+        [o for o in index.observations if o.table_or_collection != "media"])
+    votes: dict[str, Counter] = defaultdict(Counter)
+    for a in dataset.activity:
+        if a.resource_id and a.target_system:
+            votes[discovery._resource_prefix(a.resource_id)][a.target_system] += 1
+    for prefix, counter in votes.items():
+        prefix_sys.setdefault(prefix, counter.most_common(1)[0][0])
+    categories = {r.data_category for r in dataset.rules}
+    for prefix in prefix_sys:
+        if prefix in prefix_cat:
+            continue
+        named = [c for c in categories if c.startswith(prefix.upper() + "_")]
+        if len(named) == 1:
+            prefix_cat[prefix] = named[0]
+    return prefix_cat, prefix_sys
+
+
+def vision_available(config: VisionConfig | None = None) -> bool:
+    """True when the OpenAI backend can be used (key set and SDK installed)."""
+    import importlib.util
+    import os
+    from .env import load_dotenv
+    load_dotenv()
+    config = config or VisionConfig()
+    return bool(os.environ.get(config.api_key_env)) \
+        and importlib.util.find_spec("openai") is not None
+
+
+def augment_index(
+    index: discovery.EvidenceIndex,
+    dataset: Dataset,
+    config: VisionConfig | None = None,
+) -> tuple[discovery.EvidenceIndex, dict]:
+    """Extract every PDF/image (cached) and merge the records into ``index``.
+
+    With an OpenAI key the VLM reads PDFs and screenshots (PDF failures fall
+    back to local text parsing). Without one, cached model extractions are
+    still reused and uncached PDFs use the deterministic local parser; images
+    without a cached extraction are skipped. Returns the index and a summary.
+    """
+    config = VisionConfig(**(config or VisionConfig()).__dict__)
+    repo_root = Path(dataset.dataset_dir).resolve().parent
+    if not Path(config.cache_dir).is_absolute():
+        config.cache_dir = repo_root / config.cache_dir
+    if not Path(config.usage_log_path).is_absolute():
+        config.usage_log_path = repo_root / config.usage_log_path
+    if not vision_available(config):
+        config.backend = "local"
+    config.allow_local_fallback = True
+    extractor = VisionExtractor(config)
+    extractions = extractor.extract_all(dataset)
+    before = len(index.observations)
+    index = integrate_media(index, extractions, dataset)
+    summary = {
+        "backend": config.backend,
+        "model": config.model if config.backend != "local" else "regex",
+        "files": len(extractions),
+        "model_calls": sum(1 for e in extractions
+                           if not e.cached and e.backend == "openai" and not e.error),
+        "cached": sum(1 for e in extractions if e.cached),
+        "errors": sum(1 for e in extractions if e.error),
+        "records": sum(len(e.records) for e in extractions),
+        "observations": len(index.observations) - before,
+    }
+    return index, summary
 
 
 # ---------------------------------------------------------------------------
@@ -441,6 +595,78 @@ def _regex_identifiers(text: str) -> list[ExtractedIdentifier]:
     return found
 
 
+def _normalize_for_match(text: str) -> str:
+    return re.sub(r"[\s()\-.]", "", text.lower())
+
+
+def _verify_records(
+    raw_records: list[dict], pdf_text: str | None
+) -> tuple[list[ExtractedRecord], list[str]]:
+    """Keep well-formed, plausible records; for PDFs, require literal presence.
+
+    Every identifier must pass :func:`verify_identifier` (names are kept only
+    as context, never as the sole link), the resource id must look like an
+    internal id, and — when the source text is available (PDFs) — the id and
+    each identifier value must literally occur in it. Records with no
+    identifier are kept only when their state is self-describing.
+    """
+    norm_text = _normalize_for_match(pdf_text) if pdf_text else None
+    records: list[ExtractedRecord] = []
+    rejected: list[str] = []
+    for raw in raw_records:
+        rid = str(raw.get("resource_id") or "").strip()
+        conf = float(raw.get("confidence") or 0.0)
+        state = str(raw.get("state") or "UNKNOWN").strip().upper()
+        if not _RE_RESOURCE_ID.match(rid) or rid.startswith("user_"):
+            rejected.append(f"{rid!r}: not an internal resource id")
+            continue
+        if conf < _LOW_CONFIDENCE_THRESHOLD:
+            rejected.append(f"{rid}: confidence {conf:.2f} below threshold")
+            continue
+        if norm_text is not None and _normalize_for_match(rid) not in norm_text:
+            rejected.append(f"{rid}: id not present in document text")
+            continue
+        ids: dict[str, str] = {}
+        for kind, value in (raw.get("identifiers") or {}).items():
+            kind = str(kind).lower()
+            if kind not in _IDENTIFIER_KEYS or value in (None, ""):
+                continue
+            ident = ExtractedIdentifier(type=kind, value=str(value).strip(), confidence=conf)
+            ok, reason = verify_identifier(ident)
+            if not ok:
+                rejected.append(f"{rid}.{kind}: {reason}")
+                continue
+            if norm_text is not None and _normalize_for_match(ident.value) not in norm_text:
+                rejected.append(f"{rid}.{kind}: value not present in document text")
+                continue
+            ids[kind] = ident.value
+        if not (set(ids) - {"name"}) and state not in _SELF_DESCRIBING_STATES:
+            rejected.append(f"{rid}: no linkable identifier and no explicit state")
+            continue
+        records.append(ExtractedRecord(rid, ids, str(raw.get("status") or ""),
+                                       state if state in _STATE_MAP or state in
+                                       {"PRESENT", "UNKNOWN"} else "UNKNOWN", conf))
+    return records, rejected
+
+
+_RE_FIND_RESOURCE = re.compile(r"\b([a-z][a-z_]*_\d+)\b")
+
+
+def _regex_records(text: str, verified: list[ExtractedIdentifier]) -> list[ExtractedRecord]:
+    """Local fallback: a document naming exactly one resource is about it.
+
+    The verified identifiers are attached to that resource. Documents that
+    name several resources are ambiguous without layout, so none is emitted.
+    """
+    rids = {m for m in _RE_FIND_RESOURCE.findall(text) if not m.startswith("user_")}
+    if len(rids) != 1:
+        return []
+    ids = {i.type: i.value for i in verified if i.type in _IDENTIFIER_KEYS}
+    if not ids:
+        return []
+    return [ExtractedRecord(rids.pop(), ids, "", "UNKNOWN", 0.9)]
+
+
 def _extraction_from_dict(d: dict) -> MediaExtraction:
     """Rebuild a MediaExtraction (and its identifiers) from cached JSON."""
     def mk(items):
@@ -450,6 +676,8 @@ def _extraction_from_dict(d: dict) -> MediaExtraction:
         model=d.get("model", ""), cached=d.get("cached", False),
         identifiers=mk(d.get("identifiers", [])),
         low_confidence=mk(d.get("low_confidence", [])),
+        records=[ExtractedRecord(**r) for r in d.get("records", [])],
+        rejected=list(d.get("rejected", [])),
         error=d.get("error", ""),
         prompt_tokens=d.get("prompt_tokens", 0),
         completion_tokens=d.get("completion_tokens", 0),

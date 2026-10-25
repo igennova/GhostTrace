@@ -19,7 +19,7 @@ from pathlib import Path
 # Allow running as "python code/main.py" without installing the package.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from ghostaudit import agent, discovery, writer  # noqa: E402
+from ghostaudit import agent, discovery, vision, writer  # noqa: E402
 from ghostaudit.identity import IdentityResolver  # noqa: E402
 from ghostaudit.llm import load_intent_classifier  # noqa: E402
 from ghostaudit.loader import load_dataset  # noqa: E402
@@ -37,11 +37,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         help="path to write output.csv (repository root by default)")
     parser.add_argument("--rebuild-index", action="store_true",
                         help="force a rebuild of the evidence index cache")
+    parser.add_argument("--no-vision", action="store_true",
+                        help="skip PDF/image evidence extraction")
     return parser.parse_args(argv)
 
 
 def run(dataset_dir: str | Path, output_path: str | Path,
-        rebuild_index: bool = False) -> list[str]:
+        rebuild_index: bool = False, use_vision: bool = True) -> list[str]:
     """Execute the full audit pipeline, write output.csv, and validate it.
 
     Flow: ``load_dataset`` -> ``RuleBook`` + ``build_evidence_index`` +
@@ -52,6 +54,12 @@ def run(dataset_dir: str | Path, output_path: str | Path,
     dataset = load_dataset(dataset_dir)
     rules = RuleBook.from_dataset(dataset)
     index = discovery.build_evidence_index(dataset_dir, rebuild=rebuild_index)
+    if use_vision:
+        # PDF/screenshot records join the same index (VLM with a key, cached;
+        # deterministic PDF text parsing without one).
+        index, media = vision.augment_index(index, dataset)
+        print("vision: {backend} ({model}) files={files} model_calls={model_calls} "
+              "cached={cached} errors={errors} records={records}".format(**media))
     resolver = IdentityResolver.from_dataset(dataset)
     # LLM intent classification activates automatically when OPENAI_API_KEY is
     # set and the SDK is installed; otherwise the deterministic regex is used.
@@ -68,7 +76,8 @@ def run(dataset_dir: str | Path, output_path: str | Path,
 def main(argv: list[str] | None = None) -> int:
     """CLI main: parse args, run the pipeline, report, return an exit code."""
     args = parse_args(argv)
-    problems = run(args.dataset, args.output, args.rebuild_index)
+    problems = run(args.dataset, args.output, args.rebuild_index,
+                   use_vision=not args.no_vision)
     if problems:
         print(f"output.csv FAILED validation ({len(problems)} problem(s)):")
         for p in problems[:20]:

@@ -6,8 +6,9 @@ reconstructs the subject's data state across all systems at the request's
 `audit_at` cutoff, applies `dataset/deletion_rules.csv`, and emits an ordered
 plan of findings, remediation, and verification steps to `output.csv`.
 
-> Status: **scaffold**. Modules define responsibilities and signatures; logic
-> is not yet implemented.
+Deterministic core; an OpenAI model is used only for deletion-intent
+classification and for reading PDF/screenshot evidence. Every model result is
+cached on disk, so reruns make no new calls and the output is reproducible.
 
 ## Setup
 
@@ -15,15 +16,20 @@ plan of findings, remediation, and verification steps to `output.csv`.
 cd code
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-export ANTHROPIC_API_KEY=...   # read from the environment only; never commit
+export OPENAI_API_KEY=...   # or put it in a repo-root .env; never commit it
 ```
+
+Without a key the pipeline still runs: intent falls back to a deterministic
+multilingual regex, PDFs are read with local text parsing, and screenshots are
+used only if an earlier keyed run cached their extraction.
 
 ## Run
 
 From the repository root:
 
 ```bash
-python code/main.py
+python code/main.py               # full run (vision + LLM intent when keyed)
+python code/main.py --no-vision   # skip PDF/image evidence
 ```
 
 Writes the final `output.csv` (header `case_id,deletion_status,steps_json`,
@@ -46,7 +52,7 @@ The pipeline is a chain of single-responsibility modules under
 | `retention.py` | Records that must be kept and identifiers they may keep. |
 | `remediation.py` | Build ordered findings → remediation → verification steps. |
 | `status.py` | Decide COMPLETE / INCOMPLETE / NOT_APPLICABLE. |
-| `vision.py` | Extract identifiers/facts from images and PDFs. |
+| `vision.py` | Read PDFs/screenshots into per-record observations (resource id, identifiers, explicit state); PDF values must appear verbatim in the text; merged into the shared index. |
 | `llm.py` | Structured model calls for messy text and media only. |
 | `writer.py` | Own the output schema: ordering, serialization, validation. |
 | `agent.py` | Wire the modules into one bounded audit per case. |

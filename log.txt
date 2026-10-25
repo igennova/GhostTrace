@@ -397,3 +397,82 @@ branch=claude/account-absence-synthesis
 repo_root=/Users/igennova/Desktop/Projects/AgentGhost
 worktree=main
 parent_agent=none
+
+## 2026-10-25T11:33:30Z Wire vision (PDF/image evidence) into the pipeline (gap #2)
+
+User Prompt (verbatim, secrets redacted):
+Start gap #2: wire vision.extract_all + integrate_media into the pipeline so PDF/image evidence feeds discovery.
+
+Agent Response Summary:
+Media files hold several records each (e.g. a backup console lists 4 archives for different people), so the vision prompt now returns per-record {resource_id, identifiers, status, state} (prompt vision_v3; user_N is always a person reference). Records are verified (plausible identifiers, PDF ids/values must literally appear in the PDF text), mapped to system/category via the corpus's learned prefix maps (fallbacks: activity target_system, single rules category named after the prefix; PDF support record -> SUPPORT_ATTACHMENT), and merged into the index plus identity links. Data-flow/backup rows only count as state evidence when the screen shows an explicit flag. vision.augment_index is key-gated: gpt-4o with a key, cached model results reused keyless, local pypdf parsing otherwise. Ran with the user's OPENAI_API_KEY from .env: 15 vision calls (gpt-4o), then a cached full run. Samples: status 100% (32/32), step F1 90.5%, field 79.6%, sequence 40.6%. Eval: empty COMPLETE rows 4 -> 1 (case_61, audit 2026-02-14), 8 rows cite media evidence.
+
+Actions:
+* code/ghostaudit/vision.py (records, verification, prefix maps, augment_index); code/prompts/vision_v3.txt
+* code/main.py (--no-vision, vision summary line), code/evaluation/evaluate.py, code/README.md
+* New code/tests/test_vision.py (5 tests); 32 passed
+* Ran evaluate.py and main.py with .venv (OpenAI vision + intent)
+
+Context:
+tool=Claude Code
+model=claude-opus-5-5
+branch=claude/account-absence-synthesis
+repo_root=/Users/igennova/Desktop/Projects/AgentGhost
+worktree=main
+parent_agent=none
+
+## 2026-10-25T11:34:12Z Commit and push vision work to PR #11
+
+User Prompt (verbatim, secrets redacted):
+Commit the vision work onto claude/account-absence-synthesis and push so PR #11 includes it.
+
+Agent Response Summary:
+Committed the gap #2 vision integration (vision.py, prompt v3, main/evaluate wiring, tests, README, regenerated output.csv and evaluation report, log) on claude/account-absence-synthesis, pushed, and updated PR #11's title/description to cover both changes. Stray untracked 'True' file left out.
+
+Actions:
+* git add (explicit paths); git commit; git push; gh pr edit 11
+
+Context:
+tool=Claude Code
+model=claude-opus-5-5
+branch=claude/account-absence-synthesis
+repo_root=/Users/igennova/Desktop/Projects/AgentGhost
+worktree=main
+parent_agent=none
+
+## 2026-10-25T11:35:09Z Note: PR #11 merged before vision push
+
+User Prompt (verbatim, secrets redacted):
+(same turn) Commit the vision work onto claude/account-absence-synthesis and push so PR #11 includes it.
+
+Agent Response Summary:
+After pushing fb4f34c, found PR #11 had already been merged at 2026-10-25T11:24:51Z (merge f0b5a5d, containing only 3808570), so it cannot include the vision commit. Restored PR #11's original title/description (an edit had briefly described the vision work) and drafted a body for a follow-up PR; asked the user before opening it.
+
+Actions:
+* gh pr view/edit 11 (restored original title/body); git fetch; git log origin/master..fb4f34c
+
+Context:
+tool=Claude Code
+model=claude-opus-5-5
+branch=claude/account-absence-synthesis
+repo_root=/Users/igennova/Desktop/Projects/AgentGhost
+worktree=main
+parent_agent=none
+
+## 2026-10-25T11:35:47Z Open follow-up PR for vision commit
+
+User Prompt (verbatim, secrets redacted):
+Open a new PR from claude/account-absence-synthesis to master for the vision commit, using the drafted description.
+
+Agent Response Summary:
+Committed the pending log notes, pushed the branch, and opened a follow-up PR against master carrying fb4f34c (vision) with the drafted description marking it as a follow-up to PR #11.
+
+Actions:
+* git commit log.txt; git push; gh pr create --base master
+
+Context:
+tool=Claude Code
+model=claude-opus-5-5
+branch=claude/account-absence-synthesis
+repo_root=/Users/igennova/Desktop/Projects/AgentGhost
+worktree=main
+parent_agent=none

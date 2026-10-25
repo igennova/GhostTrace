@@ -199,6 +199,8 @@ class VisionExtractor:
         if self._client is None:
             import os
             from openai import OpenAI  # imported lazily so the dep is optional
+            from .env import load_dotenv
+            load_dotenv()
             api_key = os.environ.get(self.config.api_key_env)
             if not api_key:
                 raise RuntimeError(

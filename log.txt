@@ -227,3 +227,25 @@ branch=claude/repo-exploration-spec-yy93it
 repo_root=/home/user/GhostTrace
 worktree=main
 parent_agent=none
+
+## 2026-10-25T04:05:00Z Add zero-dependency .env auto-loading
+
+User Prompt (verbatim, secrets redacted):
+(local run) OPENAI_API_KEY set: False ... but my openai key is on env ... how to make it picked up automatically.
+
+Agent Response Summary:
+The key was in a .env file, which Python does not auto-load. Added code/ghostaudit/env.py: a zero-dependency .env loader (searches cwd and repo root/parents, parses KEY=VALUE, never overwrites existing env vars, loads once). Wired load_dotenv() into IntentClassifier.available/_get_client and VisionExtractor._get_client so OPENAI_API_KEY is picked up from a repo-root .env without manual export. Added .env.example (OPENAI_API_KEY=, optional OPENAI_BASE_URL). Verified: auto-load reads a .env without exporting; .env is gitignored; .env.example tracked. Explained to the user that main.py writes output.csv (the deliverable, no accuracy since the 518 eval cases have no public answers) while code/evaluation/evaluate.py reports accuracy on the 32 sample cases, and that running the evaluator with the key now exercises LLM intent (expected to fix case_26, ~81.2%->~84.4% status).
+
+Actions:
+* Added code/ghostaudit/env.py (load_dotenv / find_dotenv)
+* Wired load_dotenv() into llm.py and vision.py key reads
+* Added .env.example
+* Verified auto-load + gitignore
+
+Context:
+tool=Claude Code
+model=claude-opus-4-8
+branch=claude/repo-exploration-spec-yy93it
+repo_root=/home/user/GhostTrace
+worktree=main
+parent_agent=none

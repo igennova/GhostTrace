@@ -74,6 +74,8 @@ class IntentClassifier:
     def available(cls, config: LLMConfig | None = None) -> bool:
         """Return whether an API key and the OpenAI SDK are both present."""
         import os
+        from .env import load_dotenv
+        load_dotenv()
         config = config or LLMConfig()
         if not os.environ.get(config.api_key_env):
             return False
@@ -105,6 +107,8 @@ class IntentClassifier:
         if self._client is None:
             import os
             from openai import OpenAI
+            from .env import load_dotenv
+            load_dotenv()
             api_key = os.environ.get(self.config.api_key_env)
             if not api_key:
                 raise RuntimeError(f"{self.config.api_key_env} is not set")

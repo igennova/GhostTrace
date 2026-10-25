@@ -68,3 +68,28 @@ branch=claude/repo-exploration-spec-yy93it
 repo_root=/home/user/GhostTrace
 worktree=main
 parent_agent=none
+
+## 2026-10-25T00:55:00Z Implement rules.py and discovery.py (deterministic)
+
+User Prompt (verbatim, secrets redacted):
+Implement code/rules.py and code/discovery.py. Deterministic; no LLM.
+- rules: parse deletion_rules.csv into a lookup: (system, data_category) -> required treatment (DELETE / REDACT / ANONYMIZE / RETAIN), the identifiers permitted in a retained record, and whether the record MUST be retained. Derive categories/systems from the data, not hardcoded.
+- discovery: build a SHARED evidence index ONCE over the whole corpus and cache it to disk (reuse across all 518 cases). Scan every TEXT evidence file deterministically for every identifier: SQL snapshots (load them into in-memory SQLite and query), logs, JSON, and txt. Record identifier -> [{file_id/activity_id/audit_id, system_id, resource_id, data_category, observed_state, timestamp}]. Media (PDF/image) handled later by vision.py; leave a hook.
+Per request, return every record in every system that matches ANY of the user's identifiers, as of audit_at. No hardcoded system names. Show what was found for 2 requests. Stop for review.
+
+Agent Response Summary:
+Implemented rules.py (RuleBook: category -> RuleDecision with required_action, permitted/prohibited identifier sets, must_retain, record_survives; build_lookup materializes (system,category) pairs from observed evidence; DIRECT_IDENTIFIER_FIELDS/STABLE_REFERENCE_FIELDS constants). Implemented discovery.py: a shared EvidenceIndex built once over the corpus and cached to disk (fingerprint-keyed JSON), with deterministic parsers for SQL (in-memory SQLite, typed + record_json tables), JSON (snapshot bundles, service_resource_export probes, uniform ledger family incl. embedded operational_record_history), logs (ledger-style per-line + trace-style grouped by trace_id across kv/json/syslog/pipe/bracket/escaped-message wrappers), and pipe-delimited handover txt. Systems/categories derived from data (explicit where labeled, else learned prefix->category/system maps). Matching uses strong identifiers only (email/phone/hash/stable refs; names excluded to avoid decoys) via a shared normalize_tokens(). Media handled by a scan_media_file() hook (returns [] until vision.py). Built index: 2693 observations, 1332 tokens, ~0.1s, 11 clean (system,category) pairs. Validated on 2 requests (case_11, case_05): discovery reproduced the exact resource sets/states/evidence of the known golden answers. Fixed two parser bugs found via the demo (pipe-log level leaking into system_id; embedded ledger rows in snapshot bundles mis-parsed and lookup_value not indexed). No LLM used.
+
+Actions:
+* Rewrote code/ghostaudit/rules.py (RuleBook + identifier-field constants)
+* Rewrote code/ghostaudit/discovery.py (cached shared index + per-format parsers + vision hook)
+* Added .cache/ to .gitignore
+* Validated with scratchpad demo over 2 requests; iterated on 2 bug fixes
+
+Context:
+tool=Claude Code
+model=claude-opus-4-8
+branch=claude/repo-exploration-spec-yy93it
+repo_root=/home/user/GhostTrace
+worktree=main
+parent_agent=none

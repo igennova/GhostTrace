@@ -57,14 +57,15 @@ MEDIA_SUFFIXES = {".pdf", ".png", ".jpg", ".jpeg"}
 _MATCH_FIELD_NAMES: frozenset[str] = (
     (DIRECT_IDENTIFIER_FIELDS - {"name", "full_name", "display_name", "requester_name"})
     | STABLE_REFERENCE_FIELDS
-    | {"lookup_key", "match_key", "correlation_key", "query", "lookup_value",
-       "owner", "key"}
+    | {"lookup_key", "match_key", "correlation_key", "subject_key", "query",
+       "lookup_value", "owner", "key"}
 )
 
 # Fields recorded for display (includes names) but not all used for matching.
 _IDENTIFIER_FIELD_NAMES: frozenset[str] = (
     DIRECT_IDENTIFIER_FIELDS | STABLE_REFERENCE_FIELDS
-    | {"lookup_key", "match_key", "correlation_key", "query", "lookup_value"}
+    | {"lookup_key", "match_key", "correlation_key", "subject_key", "query",
+       "lookup_value"}
 )
 
 _CACHE_VERSION = "2"
@@ -664,19 +665,28 @@ def scan_log(path: Path, entry: _ManifestEntry) -> list[Observation]:
             if ts:
                 group_ts[key] = ts
 
+    probe_keys = ("lookup_key", "match_key", "correlation_key", "subject_key", "query")
     for key, tokens in groups.items():
         resource_id = tokens.get("resource_id")
         if not resource_id:
             continue
+        # Record-content identifiers (exclude the probe/query key, which is the
+        # subject being looked up, not what the record still holds).
+        record_ids = _collect_identifier_values({
+            k: tokens[k] for k in tokens
+            if k in _IDENTIFIER_FIELD_NAMES and k not in probe_keys
+        })
         state = _state_from_log_tokens(tokens)
         if state == STATE_UNKNOWN:
-            continue
-        ids = _collect_identifier_values({
-            k: tokens[k] for k in tokens
-            if k in _IDENTIFIER_FIELD_NAMES
-        })
+            # A completed read with no explicit signal but returned record
+            # fields is a present record; classify by what it still exposes.
+            if record_ids:
+                state = _state_from_identifiers(record_ids)
+            else:
+                continue
+        ids = dict(record_ids)
         # lookup_key / match_key / correlation_key carry the subject identifier.
-        for probe_key in ("lookup_key", "match_key", "correlation_key", "query"):
+        for probe_key in probe_keys:
             if tokens.get(probe_key):
                 ids.setdefault(probe_key, tokens[probe_key])
         obs.append(Observation(

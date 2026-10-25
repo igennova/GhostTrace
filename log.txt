@@ -269,3 +269,22 @@ branch=claude/repo-exploration-spec-yy93it
 repo_root=/home/user/GhostTrace
 worktree=main
 parent_agent=none
+
+## 2026-10-25T05:00:00Z Discovery recall: trace-read presence + subject_key matching
+
+User Prompt (verbatim, secrets redacted): (continuation of "yes do that" — keep improving discovery recall per the sample diffs)
+
+Agent Response Summary:
+Two recall fixes in discovery.py. (1) Trace-log reads that return a record's own identifier fields but carry no explicit presence signal (e.g. analytics_profile_read_completed with email=...) were returning UNKNOWN and being skipped, losing EXPOSED_PII findings; now a completed read with record-content identifiers is treated as present and classified (EXPOSED/REDACTED/ANONYMIZED). Record-content identifiers are separated from the probe/query key so the subject-being-looked-up is not mistaken for remaining record content. (2) Added subject_key to the match/identifier/probe key sets: a connector/backup heartbeat line carries resource_id+enabled on one line and the subject under subject_key on another line of the same trace_id; without subject_key those active data flows never linked to the subject (fixed case_15). Sample eval (keyless/regex): status accuracy 84.4% -> 87.5% (28/32), step recall 64.8->69.4, step F1 76.9->80.2, field 53->59. 21 unit tests pass. Remaining 4 status-wrong: case_07 (support attachment only in a PDF -> needs vision), case_17 (backup restore from a log), case_26 (regex intent miss -> LLM fixes), case_32 (tombstone exposure).
+
+Actions:
+* discovery.py: infer presence for completed trace reads from returned record identifiers; add subject_key to match/identifier/probe key sets
+* Re-ran evaluate.py (regenerated report) and main.py (regenerated output.csv); 21 tests pass
+
+Context:
+tool=Claude Code
+model=claude-opus-4-8
+branch=claude/repo-exploration-spec-yy93it
+repo_root=/home/user/GhostTrace
+worktree=main
+parent_agent=none

@@ -288,3 +288,22 @@ branch=claude/repo-exploration-spec-yy93it
 repo_root=/home/user/GhostTrace
 worktree=main
 parent_agent=none
+
+## 2026-10-25T05:20:00Z Discovery recall: tombstone category + backup restore-candidate signals
+
+User Prompt (verbatim, secrets redacted): (continuation — keep closing the sample-set gaps)
+
+Agent Response Summary:
+Two more recall fixes. (1) ACCOUNT_TOMBSTONE is never labeled in participant evidence (only in deletion_rules.csv), so the 'tombstone' prefix stayed uncategorized and retention skipped it; added a data-structural fallback mapping the 'deleted_customer_references' collection to ACCOUNT_TOMBSTONE (fixes case_32 exposed tombstone; also helps case_31 redacted tombstone). (2) backup restore-candidate log events use eligible=/deletion_block= rather than restore_allowed=; added those to the log state inference (deletion_block true -> BLOCKED else ACTIVE; eligible true -> ACTIVE) so restorable backups surfaced from logs are flagged (fixes case_17). Sample eval (keyless/regex): status accuracy 87.5% -> 93.8% (30/32); cumulative this session 81.2% -> 93.8%. step recall 69.4->73.1, step F1 80.2->82.7, field 59->61.8. 21 tests pass. Only 2 status-wrong remain: case_07 (support attachment only in a PDF -> vision run fixes it) and case_26 (regex intent miss -> LLM intent fixes it).
+
+Actions:
+* discovery.py: _COLLECTION_CATEGORY tombstone fallback; eligible/deletion_block backup state in _state_from_log_tokens
+* Re-ran evaluate.py (regenerated report) and main.py (regenerated output.csv); 21 tests pass
+
+Context:
+tool=Claude Code
+model=claude-opus-4-8
+branch=claude/repo-exploration-spec-yy93it
+repo_root=/home/user/GhostTrace
+worktree=main
+parent_agent=none

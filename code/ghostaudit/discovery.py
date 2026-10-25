@@ -714,6 +714,10 @@ def _state_from_log_tokens(tokens: dict[str, str]) -> str:
     if "restore_allowed" in tokens:
         return (STATE_ACTIVE if str(tokens["restore_allowed"]).lower() == "true"
                 else STATE_BLOCKED)
+    if "deletion_block" in tokens:  # backup restore-candidate evaluation
+        return STATE_BLOCKED if _truthy(tokens["deletion_block"]) else STATE_ACTIVE
+    if "eligible" in tokens:
+        return STATE_ACTIVE if _truthy(tokens["eligible"]) else STATE_BLOCKED
     if "marker_found" in tokens:
         return STATE_ABSENT if str(tokens["marker_found"]).lower() == "true" else STATE_PRESENT
     if str(tokens.get("result", "")).lower() == "hit" or tokens.get("total_hits"):
@@ -787,6 +791,15 @@ def _scan_file(path: Path, entry: _ManifestEntry) -> list[Observation]:
 # ---------------------------------------------------------------------------
 # Category / system learning (data-derived, from explicitly labeled evidence)
 # ---------------------------------------------------------------------------
+# Structural fallback for a category the labeled evidence never names. The
+# account-tombstone category exists only in deletion_rules.csv; its records live
+# in the "deleted_customer_references" collection, so that collection name maps
+# to it when prefix learning yields nothing.
+_COLLECTION_CATEGORY = {
+    "deleted_customer_references": "ACCOUNT_TOMBSTONE",
+}
+
+
 def _resource_prefix(resource_id: str) -> str:
     """Return the non-numeric prefix of a resource id (``account_005`` -> ``account``)."""
     m = re.match(r"^(.*?)_\d+$", resource_id)
@@ -824,7 +837,8 @@ def _apply_learned_maps(
     for o in observations:
         prefix = _resource_prefix(o.resource_id)
         if not o.data_category:
-            o.data_category = prefix_cat.get(prefix, "")
+            o.data_category = (prefix_cat.get(prefix)
+                               or _COLLECTION_CATEGORY.get(o.table_or_collection, ""))
         o.system_id = prefix_sys.get(prefix, o.system_id)
 
 

@@ -249,3 +249,23 @@ branch=claude/repo-exploration-spec-yy93it
 repo_root=/home/user/GhostTrace
 worktree=main
 parent_agent=none
+
+## 2026-10-25T04:40:00Z Discovery recall: SQL state, resource-id linking, captured_at, canonicalization
+
+User Prompt (verbatim, secrets redacted):
+yes do that  [implement (a) SQL state interpretation + (b) resource-id linking + authoritative-snapshot/evidence selection, per the evaluation diffs]
+
+Agent Response Summary:
+Implemented in discovery.py: (a) SQL/JSON state interpretation via _state_from_fields — connector rows use enabled (ACTIVE/DISABLED), backup rows use restore_allowed (ACTIVE/BLOCKED), others classified by remaining identifiers (was blanket PRESENT); applied to SQL typed + record_json rows and flat JSON records. (b) resource-id linking: EvidenceIndex now carries resource_index (resource_id -> observations) and token_to_resources (identifier token -> resource ids), built from observations AND the system_activity.csv data catalog (_activity_links parses emails/user refs from details); discover_by_identifiers does a second pass matching observations on any resource the subject's identifiers are linked to, so null-identifier readback rows become reachable. (c) evidence availability cutoff: observations carry captured_at (evidence-file time) and are excluded when captured_at > audit_at (stops citing evidence created after the cutoff, e.g. evidence_02 on a 09-15 case). (d) data-derived system canonicalization: system_id overridden by the majority system for a resource prefix, collapsing replica-holder names (support_replica -> support_platform). Bumped cache version to 2. Re-ran evaluator (keyless/regex): status accuracy 81.2% -> 84.4% (27/32), field 46%->53%, step F1 74.6->76.9; case_09 now correct (backup restore risk detected). 21 unit tests pass. Remaining gaps (next): absence synthesis for COMPLETE accounts not present in any row (account_001 etc.), flow/backup state from log evidence (case_15/17), tombstone exposure (case_32), support attachment category (case_10).
+
+Actions:
+* discovery.py: _state_from_fields/_truthy, resource_index + token_to_resources + _activity_links, captured_at field + cutoff filter, system canonicalization, cache v2
+* Re-ran evaluate.py (regenerated evaluation_report.md) and main.py (regenerated output.csv); 21 tests pass
+
+Context:
+tool=Claude Code
+model=claude-opus-4-8
+branch=claude/repo-exploration-spec-yy93it
+repo_root=/home/user/GhostTrace
+worktree=main
+parent_agent=none

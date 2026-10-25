@@ -21,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from ghostaudit import agent, discovery, writer  # noqa: E402
 from ghostaudit.identity import IdentityResolver  # noqa: E402
+from ghostaudit.llm import load_intent_classifier  # noqa: E402
 from ghostaudit.loader import load_dataset  # noqa: E402
 from ghostaudit.rules import RuleBook  # noqa: E402
 
@@ -52,8 +53,12 @@ def run(dataset_dir: str | Path, output_path: str | Path,
     rules = RuleBook.from_dataset(dataset)
     index = discovery.build_evidence_index(dataset_dir, rebuild=rebuild_index)
     resolver = IdentityResolver.from_dataset(dataset)
+    # LLM intent classification activates automatically when OPENAI_API_KEY is
+    # set and the SDK is installed; otherwise the deterministic regex is used.
+    intent_classifier = load_intent_classifier()
+    print("intent: " + ("LLM (OpenAI)" if intent_classifier else "deterministic regex"))
 
-    results = agent.audit_all(dataset, rules, index, resolver)
+    results = agent.audit_all(dataset, rules, index, resolver, intent_classifier)
     writer.write_output_csv(results, output_path)
 
     expected = [r.case_id for r in dataset.requests]

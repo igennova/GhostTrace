@@ -861,6 +861,47 @@ def _load_index(cache_path: Path) -> EvidenceIndex | None:
     )
 
 
+# Evidence-strength ranking for tie-breaking same-timestamp observations.
+# Point-in-time readbacks (probes/ledgers/handover) outrank bulk snapshots,
+# which outrank trace logs; media is weakest. Timestamp dominates; this only
+# breaks ties.
+_STRENGTH = {"handover": 4, "record_lookup": 4, "trace": 2, "media": 1}
+_PROBE_COLLECTIONS = {
+    "profile_lookups", "index_queries", "restore_entries", "connectors",
+    "exports", "tickets", "audit_records", "profiles",
+}
+
+
+def _obs_strength(table_or_collection: str) -> int:
+    """Rank how directly an observation establishes a resource's state."""
+    if table_or_collection in _STRENGTH:
+        return _STRENGTH[table_or_collection]
+    if table_or_collection in _PROBE_COLLECTIONS:
+        return 4
+    return 3  # snapshot tables / collections
+
+
+def latest_observation_per_resource(
+    records: list["DiscoveredRecord"],
+) -> dict[tuple[str, str], "DiscoveredRecord"]:
+    """Pick the authoritative state per (system_id, resource_id).
+
+    The latest observation by ``observed_at`` wins (state *as of* the cutoff);
+    same-timestamp ties are broken by evidence strength. This is how a later
+    readback overrides an earlier claim of deletion.
+    """
+    best: dict[tuple[str, str], DiscoveredRecord] = {}
+    rank: dict[tuple[str, str], tuple] = {}
+    for r in records:
+        key = (r.system_id, r.resource_id)
+        ts = _parse_ts(r.observed_at) or datetime.min.replace(tzinfo=timezone.utc)
+        score = (ts, _obs_strength(r.table_or_collection))
+        if key not in rank or score > rank[key]:
+            rank[key] = score
+            best[key] = r
+    return best
+
+
 def add_observations(index: EvidenceIndex, new_obs: list[Observation]) -> EvidenceIndex:
     """Append observations (e.g. from vision.py) and re-index them in place.
 

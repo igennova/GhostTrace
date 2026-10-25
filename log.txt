@@ -162,3 +162,25 @@ branch=claude/repo-exploration-spec-yy93it
 repo_root=/home/user/GhostTrace
 worktree=main
 parent_agent=none
+
+## 2026-10-25T02:55:00Z Implement remediation.py, status.py, writer.py + wire main.py
+
+User Prompt (verbatim, secrets redacted):
+Implement code/remediation.py, code/status.py, code/writer.py. Deterministic. status: COMPLETE only if ALL FOUR conditions hold; NOT_APPLICABLE if not a deletion request -> steps_json=[]; else INCOMPLETE. remediation/steps: build steps_json exactly per spec (phase order FINDING->REMEDIATION->VERIFICATION; within phase by operation order then system_id then resource_id; step_no from 1; COMPLETE = verification-only citing evidence; INCOMPLETE = findings(with evidence)+remediation+verification with empty evidence; stop recreation/restore before cleaned copies conceptually, but written order follows spec). writer: write output.csv (case_id,deletion_status,steps_json), 518 rows sorted by case_id, validate schema/row count/consecutive step_no/[] for NOT_APPLICABLE. Run main.py end to end and show first 5 rows. Stop for review.
+
+Agent Response Summary:
+Implemented status.py (deterministic multilingual deletion-intent regex across en/es/fr/pt/de/it/ja/ko/ru/ar; decide_status checks all four COMPLETE conditions: treatments compliant, no active recreation risk, retained records not exposed, must-retain present). writer.py (Step/CaseResult, order_steps with phase->operation->system->resource using numeric-aware natural sort + consecutive renumber, serialize_steps, write_output_csv sorted by case_id, validate_output checking header/row-count/consecutive step_no/NOT_APPLICABLE=[]/COMPLETE-verification-evidence/INCOMPLETE-empty-evidence). remediation.build_steps assembles FINDING+REMEDIATION (INCOMPLETE) + VERIFICATION over every relevant record; verification covers all relevant records (matches case_11 and case_26). Wired agent.audit_case/audit_all and main.py (load->rules->index->resolver->audit_all->write->validate). Adjusted recreation to return safe (disabled/blocked) flows/backups too (active flag) so COMPLETE can verify them, and excluded BACKUP_ARCHIVE from retention (recreation owns it). All 15 tests pass. main.py runs end to end: 296 INCOMPLETE, 218 COMPLETE, 4 NOT_APPLICABLE (exactly case_533/535/540/541); 518 rows; ordering/phases/evidence rules correct on populated cases. KNOWN GAP: 36 COMPLETE cases have empty steps because those subjects appear in zero TEXT evidence (absent-account probes store resource_id with null profile; some subjects only in image evidence / must be linked via the activity catalog by resource_id) -> discovery coverage fix needed next (vision run + resource-id linking). Assembly/status/writer themselves are correct and validate for the other 482 cases. No LLM.
+
+Actions:
+* Wrote code/ghostaudit/status.py, writer.py, remediation.py; rewrote agent.py, main.py
+* Adjusted recreation.py (return safe flows/backups) and retention.py (exclude BACKUP_ARCHIVE)
+* Updated test_recreation disabled/blocked expectation; all 15 tests pass
+* Ran main.py; regenerated root output.csv (518 rows); documented 36-case discovery-coverage gap
+
+Context:
+tool=Claude Code
+model=claude-opus-4-8
+branch=claude/repo-exploration-spec-yy93it
+repo_root=/home/user/GhostTrace
+worktree=main
+parent_agent=none

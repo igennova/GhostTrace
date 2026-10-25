@@ -377,15 +377,74 @@ During development the evaluation surfaced several concrete defects, each fixed:
    (verify present) and recreation (verify restore-blocked); recreation now owns
    backups exclusively, matching the sample answers.
 
-### Known open gap
+6. **Deleted accounts were invisible.** A deleted account leaves no row carrying
+   the subject's identifiers, so most plans missed `VERIFY_RECORD_ABSENT
+   account_X`. `accounts.py` now links each subject to its account (evidence link
+   first, else the deletion workflow's own `DELETE_RECORD` event near
+   `reported_at`, assigned one-to-one across all requests) and proves absence from
+   the account's own readback or the latest profile snapshot at `audit_at`.
+   Empty-COMPLETE evaluation rows fell from 34 to 4.
 
-Some subjects appear in **no text evidence** at `audit_at` (absent-account
-readback probes store a `resource_id` with a null profile, so there is no
-identifier to match on; a few subjects are only present in image evidence). Those
-cases currently reconcile to an empty COMPLETE. The planned fix is a resource-id
-linking pass in discovery (identifier -> `resource_id` via the activity catalog,
-then match absent-record observations by `resource_id`) plus the vision run on
-image evidence, so COMPLETE cases can cite the 404 / NOT_FOUND evidence.
+7. **Readbacks of linked accounts were not used.** An account linked through
+   activity had its 404 readback ignored in favour of the snapshot; discovery
+   now pulls observations by resource id for linked resources
+   (`discover_by_resources`), so COMPLETE cases cite the same proof as the samples.
+
+8. **PDF/image evidence was not in the index.** Vision now returns per-record
+   `{resource_id | reference, identifiers, state}`, verified (PDF values must
+   appear verbatim) and placed through the corpus's prefix maps. This fixed the
+   support attachment that exists only in a PDF (`case_07`).
+
+9. **Screens name items, not ids.** Storage listings, statements and registries
+   show file names / document numbers / `user_N`. These are resolved through the
+   data catalog's `LINK_RESOURCE_IDENTITY` aliases (e.g. `object_19
+   (delivery_confirmation_19.pdf)`), which surfaced a remaining attachment that
+   was the only evidence for an early-February request.
+
+10. **Screens without flags must not mark a path safe.** A connector row with no
+    explicit enabled/disabled state contributes only an identity link, so a
+    screenshot cannot mask an activity-claimed data flow (see 13 for backups).
+
+11. **Regex intent misses.** Multilingual requests the cue list missed (e.g.
+    `case_26`) are classified by the LLM (`gpt-4o-mini`, temperature 0, cached);
+    the regex remains the keyless fallback.
+
+12. **Pre-request evidence treated as current state.** Every evidence file the
+    sample answers cite was captured at or after the request. Evidence captured
+    before `requested_at` shows the data before deletion was asked for, so it no
+    longer establishes state (it still links identities), and an account's
+    absence must be proved by a snapshot taken after the request. This removed
+    stale findings (e.g. a February attachment listing reported for a September
+    request) and raised step precision to 96%.
+
+13. **Unflagged screens and recreation.** Connector rows decide flow state only
+    when the screen shows it (prompt v5 maps "healthy / continuous sync" to
+    ENABLED); an archive listed in a recovery console is restorable unless shown
+    blocked, which can only raise a restore risk, never hide one.
+
+### Progression on the sample set
+
+| Stage | Status | Step F1 | Field | Sequence |
+| --- | --- | --- | --- | --- |
+| Session start (deterministic core) | 81.2% | — | — | — |
+| Discovery recall fixes (1–5) | 93.8% | 82.7% | 61.8% | 15.6% |
+| + Account-absence synthesis (6–7) | 93.8% | 88.0% | 75.7% | 37.5% |
+| + Vision and LLM intent (8–11) | 100% | 90.5% | 79.6% | 40.6% |
+| + Request-time evidence floor, catalog aliases (9, 12–13) | 100% | 90.7% | 80.7% | 43.8% |
+
+### Known limitations
+
+- **Ambiguous account links.** When several requests share a reporting window
+  and their deletion events carry the same result, the link is a deterministic
+  tie-break (longest-pending request gets the event closest to `reported_at`);
+  `case_23` is such a tie and is linked to the wrong account.
+- **Accounts with no trace.** An account that appears in no evidence and no
+  activity (`case_04`'s `account_004`) cannot be linked, so its verification
+  step is missing.
+- **Step order and extra steps.** Most remaining mismatches are ordering within
+  a phase or an extra/missing secondary record, not status errors.
+- **Vision cache is local.** Screenshot extractions live in `.cache/`; a fresh
+  keyless clone reads PDFs locally but skips screenshots until a keyed run.
 """
 
 

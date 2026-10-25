@@ -138,3 +138,27 @@ def test_linked_account_readback_beats_snapshot() -> None:
         [], idx)
     [rec] = accounts.synthesize_absence(req, [], ctx)
     assert rec.evidence_id == "evidence_r"
+
+
+def test_snapshot_taken_before_the_request_cannot_prove_absence() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        snaps = _snapshot_corpus(Path(d))
+    # every snapshot predates this request, so nothing grounds the absence
+    req = _req("case_a", "a@x.com", "COMPLETE", requested_at="2026-09-14T12:00:00Z",
+               reported_at="2026-09-15T00:00:00Z", audit_at="2026-09-15T12:00:00Z")
+    ctx = accounts.AccountContext(
+        {accounts.request_key(req): accounts.AccountLink("account_1", "activity")},
+        snaps, _index())
+    assert accounts.synthesize_absence(req, [], ctx) == []
+
+
+def test_pre_request_evidence_does_not_establish_state() -> None:
+    from ghostaudit import agent
+    old = discovery.DiscoveredRecord("s", "r1", "USER_PROFILE", "EXPOSED",
+                                     "2026-08-01T00:00:00Z", "e1",
+                                     captured_at="2026-08-01T00:00:00Z")
+    new = discovery.DiscoveredRecord("s", "r2", "USER_PROFILE", "ABSENT",
+                                     "2026-09-01T00:00:00Z", "e2",
+                                     captured_at="2026-09-01T00:00:00Z")
+    kept = agent._after_request([old, new], "2026-08-31T12:00:00Z")
+    assert [r.resource_id for r in kept] == ["r2"]

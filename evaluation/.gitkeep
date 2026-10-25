@@ -1,2 +1,0 @@
-# Per-request audit traces (evidence for each decision) are written here at run
-# time. Empty by default.

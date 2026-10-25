@@ -5,3 +5,5 @@ venv/
 .env
 .cache/
 .pytest_cache/
+.cache.*/
+code.zip

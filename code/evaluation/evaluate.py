@@ -28,7 +28,7 @@ _REPO_ROOT = _CODE_DIR.parent
 
 from ghostaudit import (  # noqa: E402
     accounts, agent, discovery, recreation, remediation, retention, status,
-    treatment,
+    treatment, vision,
 )
 from ghostaudit.discovery import DiscoveredRecord  # noqa: E402
 from ghostaudit.identity import IdentityResolver  # noqa: E402
@@ -176,6 +176,7 @@ def evaluate(dataset_dir: str | Path, sample_requests: str | Path,
     dataset = load_dataset(dataset_dir)
     rules = RuleBook.from_dataset(dataset)
     index = discovery.build_evidence_index(dataset_dir)
+    index, _media = vision.augment_index(index, dataset)
     resolver = IdentityResolver.from_dataset(dataset)
     classifier = load_intent_classifier()
     account_context = accounts.AccountContext.build(dataset, index, resolver)

@@ -1,0 +1,2 @@
+# Reserved for an auxiliary corpus (excluded from code.zip). Empty by default;
+# the solution reads challenge inputs from dataset/, not here.

@@ -1,0 +1,15 @@
+# GhostAudit runtime dependencies.
+# CSV, JSON, and SQLite parsing use the Python standard library (no deps).
+
+# Model access for intent classification and vision extraction.
+anthropic>=0.40.0
+
+# Evidence media handling.
+pypdf>=4.2.0          # PDF text extraction
+Pillow>=10.3.0        # image loading/preprocessing for the vision model
+
+# Robust timestamp parsing.
+python-dateutil>=2.9.0
+
+# Development / tests.
+pytest>=8.2.0

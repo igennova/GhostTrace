@@ -57,17 +57,18 @@ MEDIA_SUFFIXES = {".pdf", ".png", ".jpg", ".jpeg"}
 _MATCH_FIELD_NAMES: frozenset[str] = (
     (DIRECT_IDENTIFIER_FIELDS - {"name", "full_name", "display_name", "requester_name"})
     | STABLE_REFERENCE_FIELDS
-    | {"lookup_key", "match_key", "correlation_key", "query", "lookup_value",
-       "owner", "key"}
+    | {"lookup_key", "match_key", "correlation_key", "subject_key", "query",
+       "lookup_value", "owner", "key"}
 )
 
 # Fields recorded for display (includes names) but not all used for matching.
 _IDENTIFIER_FIELD_NAMES: frozenset[str] = (
     DIRECT_IDENTIFIER_FIELDS | STABLE_REFERENCE_FIELDS
-    | {"lookup_key", "match_key", "correlation_key", "query", "lookup_value"}
+    | {"lookup_key", "match_key", "correlation_key", "subject_key", "query",
+       "lookup_value"}
 )
 
-_CACHE_VERSION = "1"
+_CACHE_VERSION = "2"
 
 
 # ---------------------------------------------------------------------------
@@ -88,15 +89,20 @@ class Observation:
     source_path: str = ""
     table_or_collection: str = ""
     matched_on: list[str] = field(default_factory=list)
+    captured_at: str = ""  # evidence-file capture time (availability cutoff)
 
 
 @dataclass
 class EvidenceIndex:
-    """All observations plus an inverted identifier index and learned maps."""
+    """All observations plus inverted indexes and resource-identity links."""
 
     fingerprint: str
     observations: list[Observation] = field(default_factory=list)
     token_index: dict[str, list[int]] = field(default_factory=dict)
+    #: resource_id -> observation indexes (so null-identifier rows are reachable).
+    resource_index: dict[str, list[int]] = field(default_factory=dict)
+    #: identifier token -> resource_ids that identifier has ever been linked to.
+    token_to_resources: dict[str, list[str]] = field(default_factory=dict)
 
     def observed_pairs(self) -> list[tuple[str, str]]:
         """Return the distinct (system_id, data_category) pairs observed."""
@@ -121,6 +127,7 @@ class DiscoveredRecord:
     identifiers: dict[str, str] = field(default_factory=dict)
     matched_on: list[str] = field(default_factory=list)
     table_or_collection: str = ""
+    captured_at: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -258,6 +265,24 @@ def _state_from_identifiers(identifiers: dict[str, str]) -> str:
     return STATE_REDACTED if has_ref else STATE_ANONYMIZED
 
 
+def _truthy(value: object) -> bool:
+    """Interpret SQL/JSON boolean-ish values ('1'/'0'/1/true/false)."""
+    return str(value).strip().lower() in {"1", "true", "yes", "t"}
+
+
+def _state_from_fields(fields: dict, identifiers: dict[str, str]) -> str:
+    """Derive observed state from a record's own flag fields, else identifiers.
+
+    Connector/backup rows carry their state in ``enabled`` / ``restore_allowed``;
+    everything else is classified by which identifiers remain.
+    """
+    if "restore_allowed" in fields and fields["restore_allowed"] not in (None, ""):
+        return STATE_ACTIVE if _truthy(fields["restore_allowed"]) else STATE_BLOCKED
+    if "enabled" in fields and fields["enabled"] not in (None, ""):
+        return STATE_ACTIVE if _truthy(fields["enabled"]) else STATE_DISABLED
+    return _state_from_identifiers(identifiers)
+
+
 def _flatten_record(record: dict) -> dict:
     """Flatten one level of nested identifier holders (e.g. ``document``)."""
     flat: dict[str, object] = {}
@@ -298,7 +323,8 @@ def scan_sql_snapshot(path: Path, entry: _ManifestEntry) -> list[Observation]:
                         rec = json.loads(row["record_json"])
                     except (TypeError, json.JSONDecodeError):
                         continue
-                    ids = _collect_identifier_values(_flatten_record(rec))
+                    flat = _flatten_record(rec)
+                    ids = _collect_identifier_values(flat)
                     obs.append(
                         Observation(
                             evidence_id=entry.evidence_id,
@@ -307,7 +333,7 @@ def scan_sql_snapshot(path: Path, entry: _ManifestEntry) -> list[Observation]:
                             resource_id=str(rec.get("resource_id")
                                              or row.get("resource_id") or ""),
                             data_category="",  # learned later
-                            observed_state=STATE_PRESENT,
+                            observed_state=_state_from_fields(flat, ids),
                             observed_at=str(row.get("updated_at")
                                             or entry.captured_at),
                             identifiers=ids,
@@ -327,7 +353,7 @@ def scan_sql_snapshot(path: Path, entry: _ManifestEntry) -> list[Observation]:
                             system_id="",  # learned from prefix
                             resource_id=resource_id,
                             data_category="",
-                            observed_state=STATE_PRESENT,
+                            observed_state=_state_from_fields(row, ids),
                             observed_at=str(row.get("updated_at")
                                             or row.get("indexed_at")
                                             or entry.captured_at),
@@ -352,7 +378,7 @@ def _obs_from_flat_record(
         return None
     ids = _collect_identifier_values(flat)
     if state is None:
-        state = _state_from_identifiers(ids)
+        state = _state_from_fields(flat, ids)
     return Observation(
         evidence_id=entry.evidence_id,
         origin=entry.origin,
@@ -639,19 +665,28 @@ def scan_log(path: Path, entry: _ManifestEntry) -> list[Observation]:
             if ts:
                 group_ts[key] = ts
 
+    probe_keys = ("lookup_key", "match_key", "correlation_key", "subject_key", "query")
     for key, tokens in groups.items():
         resource_id = tokens.get("resource_id")
         if not resource_id:
             continue
+        # Record-content identifiers (exclude the probe/query key, which is the
+        # subject being looked up, not what the record still holds).
+        record_ids = _collect_identifier_values({
+            k: tokens[k] for k in tokens
+            if k in _IDENTIFIER_FIELD_NAMES and k not in probe_keys
+        })
         state = _state_from_log_tokens(tokens)
         if state == STATE_UNKNOWN:
-            continue
-        ids = _collect_identifier_values({
-            k: tokens[k] for k in tokens
-            if k in _IDENTIFIER_FIELD_NAMES
-        })
+            # A completed read with no explicit signal but returned record
+            # fields is a present record; classify by what it still exposes.
+            if record_ids:
+                state = _state_from_identifiers(record_ids)
+            else:
+                continue
+        ids = dict(record_ids)
         # lookup_key / match_key / correlation_key carry the subject identifier.
-        for probe_key in ("lookup_key", "match_key", "correlation_key", "query"):
+        for probe_key in probe_keys:
             if tokens.get(probe_key):
                 ids.setdefault(probe_key, tokens[probe_key])
         obs.append(Observation(
@@ -679,6 +714,10 @@ def _state_from_log_tokens(tokens: dict[str, str]) -> str:
     if "restore_allowed" in tokens:
         return (STATE_ACTIVE if str(tokens["restore_allowed"]).lower() == "true"
                 else STATE_BLOCKED)
+    if "deletion_block" in tokens:  # backup restore-candidate evaluation
+        return STATE_BLOCKED if _truthy(tokens["deletion_block"]) else STATE_ACTIVE
+    if "eligible" in tokens:
+        return STATE_ACTIVE if _truthy(tokens["eligible"]) else STATE_BLOCKED
     if "marker_found" in tokens:
         return STATE_ABSENT if str(tokens["marker_found"]).lower() == "true" else STATE_PRESENT
     if str(tokens.get("result", "")).lower() == "hit" or tokens.get("total_hits"):
@@ -752,6 +791,15 @@ def _scan_file(path: Path, entry: _ManifestEntry) -> list[Observation]:
 # ---------------------------------------------------------------------------
 # Category / system learning (data-derived, from explicitly labeled evidence)
 # ---------------------------------------------------------------------------
+# Structural fallback for a category the labeled evidence never names. The
+# account-tombstone category exists only in deletion_rules.csv; its records live
+# in the "deleted_customer_references" collection, so that collection name maps
+# to it when prefix learning yields nothing.
+_COLLECTION_CATEGORY = {
+    "deleted_customer_references": "ACCOUNT_TOMBSTONE",
+}
+
+
 def _resource_prefix(resource_id: str) -> str:
     """Return the non-numeric prefix of a resource id (``account_005`` -> ``account``)."""
     m = re.match(r"^(.*?)_\d+$", resource_id)
@@ -780,13 +828,18 @@ def _apply_learned_maps(
     prefix_cat: dict[str, str],
     prefix_sys: dict[str, str],
 ) -> None:
-    """Fill missing category/system on observations from the learned maps."""
+    """Fill missing categories and canonicalize systems from the learned maps.
+
+    ``system_id`` is overridden by the majority system for a resource prefix so
+    replica-holder names (e.g. ``support_replica``) collapse onto the canonical
+    system (``support_platform``). Categories are only filled when missing.
+    """
     for o in observations:
         prefix = _resource_prefix(o.resource_id)
         if not o.data_category:
-            o.data_category = prefix_cat.get(prefix, "")
-        if not o.system_id:
-            o.system_id = prefix_sys.get(prefix, "")
+            o.data_category = (prefix_cat.get(prefix)
+                               or _COLLECTION_CATEGORY.get(o.table_or_collection, ""))
+        o.system_id = prefix_sys.get(prefix, o.system_id)
 
 
 # ---------------------------------------------------------------------------
@@ -815,23 +868,67 @@ def build_evidence_index(
             continue
         if path.suffix.lower() not in TEXT_SUFFIXES | MEDIA_SUFFIXES:
             continue
-        observations.extend(_scan_file(path, entry))
+        for o in _scan_file(path, entry):
+            o.captured_at = entry.captured_at  # availability cutoff
+            observations.append(o)
 
     prefix_cat, prefix_sys = _learn_maps(observations)
     _apply_learned_maps(observations, prefix_cat, prefix_sys)
 
     token_index: dict[str, list[int]] = defaultdict(list)
+    resource_index: dict[str, list[int]] = defaultdict(list)
+    token_to_resources: dict[str, set[str]] = defaultdict(set)
     for idx, o in enumerate(observations):
+        if o.resource_id:
+            resource_index[o.resource_id].append(idx)
         for token in _match_tokens_for_record(o.identifiers):
             token_index[token].append(idx)
+            if o.resource_id:
+                token_to_resources[token].add(o.resource_id)
+
+    # Augment identity links from the activity stream (data catalog etc.): an
+    # identifier that co-occurs with a resource id there links them too, which
+    # lets null-identifier readback rows (a 404 with no email) be matched.
+    for token, resource_id in _activity_links(dataset_dir):
+        token_to_resources[token].add(resource_id)
 
     index = EvidenceIndex(
         fingerprint=fingerprint,
         observations=observations,
         token_index=dict(token_index),
+        resource_index=dict(resource_index),
+        token_to_resources={k: sorted(v) for k, v in token_to_resources.items()},
     )
     _save_index(cache, index)
     return index
+
+
+_ACT_EMAIL_RE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
+_ACT_USER_RE = re.compile(r"\buser_\d+\b")
+
+
+def _activity_links(dataset_dir: Path):
+    """Yield (token, resource_id) identity links from ``system_activity.csv``.
+
+    Each activity row ties a ``resource_id`` to any emails / user references in
+    its details, giving a stable resource<->subject mapping independent of
+    whether a given evidence row carried the identifier.
+    """
+    path = dataset_dir / "system_activity.csv"
+    if not path.exists():
+        return
+    with path.open(newline="", encoding="utf-8") as fh:
+        for row in csv.DictReader(fh):
+            resource_id = (row.get("resource_id") or "").strip()
+            if not resource_id:
+                continue
+            details = row.get("details") or ""
+            for mail in _ACT_EMAIL_RE.findall(details):
+                for token in normalize_tokens(mail):
+                    yield token, resource_id
+            for uid in _ACT_USER_RE.findall(details):
+                for token in normalize_tokens(uid):
+                    yield token, resource_id
 
 
 def _save_index(cache_path: Path, index: EvidenceIndex) -> None:
@@ -841,6 +938,8 @@ def _save_index(cache_path: Path, index: EvidenceIndex) -> None:
         "fingerprint": index.fingerprint,
         "observations": [asdict(o) for o in index.observations],
         "token_index": index.token_index,
+        "resource_index": index.resource_index,
+        "token_to_resources": index.token_to_resources,
     }
     tmp = cache_path.with_suffix(".tmp")
     tmp.write_text(json.dumps(payload), encoding="utf-8")
@@ -858,6 +957,8 @@ def _load_index(cache_path: Path) -> EvidenceIndex | None:
         fingerprint=payload.get("fingerprint", ""),
         observations=observations,
         token_index={k: list(v) for k, v in payload.get("token_index", {}).items()},
+        resource_index={k: list(v) for k, v in payload.get("resource_index", {}).items()},
+        token_to_resources={k: list(v) for k, v in payload.get("token_to_resources", {}).items()},
     )
 
 
@@ -912,8 +1013,12 @@ def add_observations(index: EvidenceIndex, new_obs: list[Observation]) -> Eviden
     index.observations.extend(new_obs)
     for offset, obs in enumerate(new_obs):
         idx = start + offset
+        if obs.resource_id:
+            index.resource_index.setdefault(obs.resource_id, []).append(idx)
         for token in _match_tokens_for_record(obs.identifiers):
             index.token_index.setdefault(token, []).append(idx)
+            if obs.resource_id:
+                index.token_to_resources.setdefault(token, []).append(obs.resource_id)
     return index
 
 
@@ -922,23 +1027,43 @@ def discover_by_identifiers(
     match_tokens: set[str],
     audit_at: str,
 ) -> list[DiscoveredRecord]:
-    """Return every observation matching any token, established by ``audit_at``."""
+    """Return every observation for the subject, established by ``audit_at``.
+
+    Matching is two-pass: (1) observations that directly carry one of the
+    subject's identifiers, and (2) observations on any resource the subject's
+    identifiers are linked to elsewhere — so a deleted account's 404 readback
+    (which stores a resource id with a null profile) is still attributed to the
+    subject. An observation is usable only when both its own timestamp and its
+    evidence file's capture time are at or before ``audit_at``.
+    """
     seen: dict[int, list[str]] = defaultdict(list)
     for token in match_tokens:
         for idx in index.token_index.get(token, ()):
             seen[idx].append(token)
 
+    # Resource-id linking pass.
+    linked_resources: set[str] = set()
+    for token in match_tokens:
+        linked_resources.update(index.token_to_resources.get(token, ()))
+    for resource_id in linked_resources:
+        for idx in index.resource_index.get(resource_id, ()):
+            if idx not in seen:
+                seen[idx] = seen.get(idx, [])
+
     results: list[DiscoveredRecord] = []
     for idx, tokens in seen.items():
         o = index.observations[idx]
-        if not _at_or_before(o.observed_at, audit_at, o.observed_at):
+        if not _at_or_before(o.observed_at, audit_at, o.captured_at):
             continue
+        if o.captured_at and not _at_or_before(o.captured_at, audit_at, o.captured_at):
+            continue  # evidence file did not exist yet at the cutoff
         results.append(DiscoveredRecord(
             system_id=o.system_id, resource_id=o.resource_id,
             data_category=o.data_category, observed_state=o.observed_state,
             observed_at=o.observed_at, evidence_id=o.evidence_id,
-            identifiers=dict(o.identifiers), matched_on=sorted(set(tokens)),
-            table_or_collection=o.table_or_collection,
+            identifiers=dict(o.identifiers),
+            matched_on=sorted(set(tokens)) or ["(linked)"],
+            table_or_collection=o.table_or_collection, captured_at=o.captured_at,
         ))
     results.sort(key=lambda r: (r.system_id, r.resource_id, r.observed_at))
     return results

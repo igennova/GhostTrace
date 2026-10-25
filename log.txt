@@ -227,3 +227,83 @@ branch=claude/repo-exploration-spec-yy93it
 repo_root=/home/user/GhostTrace
 worktree=main
 parent_agent=none
+
+## 2026-10-25T04:05:00Z Add zero-dependency .env auto-loading
+
+User Prompt (verbatim, secrets redacted):
+(local run) OPENAI_API_KEY set: False ... but my openai key is on env ... how to make it picked up automatically.
+
+Agent Response Summary:
+The key was in a .env file, which Python does not auto-load. Added code/ghostaudit/env.py: a zero-dependency .env loader (searches cwd and repo root/parents, parses KEY=VALUE, never overwrites existing env vars, loads once). Wired load_dotenv() into IntentClassifier.available/_get_client and VisionExtractor._get_client so OPENAI_API_KEY is picked up from a repo-root .env without manual export. Added .env.example (OPENAI_API_KEY=, optional OPENAI_BASE_URL). Verified: auto-load reads a .env without exporting; .env is gitignored; .env.example tracked. Explained to the user that main.py writes output.csv (the deliverable, no accuracy since the 518 eval cases have no public answers) while code/evaluation/evaluate.py reports accuracy on the 32 sample cases, and that running the evaluator with the key now exercises LLM intent (expected to fix case_26, ~81.2%->~84.4% status).
+
+Actions:
+* Added code/ghostaudit/env.py (load_dotenv / find_dotenv)
+* Wired load_dotenv() into llm.py and vision.py key reads
+* Added .env.example
+* Verified auto-load + gitignore
+
+Context:
+tool=Claude Code
+model=claude-opus-4-8
+branch=claude/repo-exploration-spec-yy93it
+repo_root=/home/user/GhostTrace
+worktree=main
+parent_agent=none
+
+## 2026-10-25T04:40:00Z Discovery recall: SQL state, resource-id linking, captured_at, canonicalization
+
+User Prompt (verbatim, secrets redacted):
+yes do that  [implement (a) SQL state interpretation + (b) resource-id linking + authoritative-snapshot/evidence selection, per the evaluation diffs]
+
+Agent Response Summary:
+Implemented in discovery.py: (a) SQL/JSON state interpretation via _state_from_fields — connector rows use enabled (ACTIVE/DISABLED), backup rows use restore_allowed (ACTIVE/BLOCKED), others classified by remaining identifiers (was blanket PRESENT); applied to SQL typed + record_json rows and flat JSON records. (b) resource-id linking: EvidenceIndex now carries resource_index (resource_id -> observations) and token_to_resources (identifier token -> resource ids), built from observations AND the system_activity.csv data catalog (_activity_links parses emails/user refs from details); discover_by_identifiers does a second pass matching observations on any resource the subject's identifiers are linked to, so null-identifier readback rows become reachable. (c) evidence availability cutoff: observations carry captured_at (evidence-file time) and are excluded when captured_at > audit_at (stops citing evidence created after the cutoff, e.g. evidence_02 on a 09-15 case). (d) data-derived system canonicalization: system_id overridden by the majority system for a resource prefix, collapsing replica-holder names (support_replica -> support_platform). Bumped cache version to 2. Re-ran evaluator (keyless/regex): status accuracy 81.2% -> 84.4% (27/32), field 46%->53%, step F1 74.6->76.9; case_09 now correct (backup restore risk detected). 21 unit tests pass. Remaining gaps (next): absence synthesis for COMPLETE accounts not present in any row (account_001 etc.), flow/backup state from log evidence (case_15/17), tombstone exposure (case_32), support attachment category (case_10).
+
+Actions:
+* discovery.py: _state_from_fields/_truthy, resource_index + token_to_resources + _activity_links, captured_at field + cutoff filter, system canonicalization, cache v2
+* Re-ran evaluate.py (regenerated evaluation_report.md) and main.py (regenerated output.csv); 21 tests pass
+
+Context:
+tool=Claude Code
+model=claude-opus-4-8
+branch=claude/repo-exploration-spec-yy93it
+repo_root=/home/user/GhostTrace
+worktree=main
+parent_agent=none
+
+## 2026-10-25T05:00:00Z Discovery recall: trace-read presence + subject_key matching
+
+User Prompt (verbatim, secrets redacted): (continuation of "yes do that" — keep improving discovery recall per the sample diffs)
+
+Agent Response Summary:
+Two recall fixes in discovery.py. (1) Trace-log reads that return a record's own identifier fields but carry no explicit presence signal (e.g. analytics_profile_read_completed with email=...) were returning UNKNOWN and being skipped, losing EXPOSED_PII findings; now a completed read with record-content identifiers is treated as present and classified (EXPOSED/REDACTED/ANONYMIZED). Record-content identifiers are separated from the probe/query key so the subject-being-looked-up is not mistaken for remaining record content. (2) Added subject_key to the match/identifier/probe key sets: a connector/backup heartbeat line carries resource_id+enabled on one line and the subject under subject_key on another line of the same trace_id; without subject_key those active data flows never linked to the subject (fixed case_15). Sample eval (keyless/regex): status accuracy 84.4% -> 87.5% (28/32), step recall 64.8->69.4, step F1 76.9->80.2, field 53->59. 21 unit tests pass. Remaining 4 status-wrong: case_07 (support attachment only in a PDF -> needs vision), case_17 (backup restore from a log), case_26 (regex intent miss -> LLM fixes), case_32 (tombstone exposure).
+
+Actions:
+* discovery.py: infer presence for completed trace reads from returned record identifiers; add subject_key to match/identifier/probe key sets
+* Re-ran evaluate.py (regenerated report) and main.py (regenerated output.csv); 21 tests pass
+
+Context:
+tool=Claude Code
+model=claude-opus-4-8
+branch=claude/repo-exploration-spec-yy93it
+repo_root=/home/user/GhostTrace
+worktree=main
+parent_agent=none
+
+## 2026-10-25T05:20:00Z Discovery recall: tombstone category + backup restore-candidate signals
+
+User Prompt (verbatim, secrets redacted): (continuation — keep closing the sample-set gaps)
+
+Agent Response Summary:
+Two more recall fixes. (1) ACCOUNT_TOMBSTONE is never labeled in participant evidence (only in deletion_rules.csv), so the 'tombstone' prefix stayed uncategorized and retention skipped it; added a data-structural fallback mapping the 'deleted_customer_references' collection to ACCOUNT_TOMBSTONE (fixes case_32 exposed tombstone; also helps case_31 redacted tombstone). (2) backup restore-candidate log events use eligible=/deletion_block= rather than restore_allowed=; added those to the log state inference (deletion_block true -> BLOCKED else ACTIVE; eligible true -> ACTIVE) so restorable backups surfaced from logs are flagged (fixes case_17). Sample eval (keyless/regex): status accuracy 87.5% -> 93.8% (30/32); cumulative this session 81.2% -> 93.8%. step recall 69.4->73.1, step F1 80.2->82.7, field 59->61.8. 21 tests pass. Only 2 status-wrong remain: case_07 (support attachment only in a PDF -> vision run fixes it) and case_26 (regex intent miss -> LLM intent fixes it).
+
+Actions:
+* discovery.py: _COLLECTION_CATEGORY tombstone fallback; eligible/deletion_block backup state in _state_from_log_tokens
+* Re-ran evaluate.py (regenerated report) and main.py (regenerated output.csv); 21 tests pass
+
+Context:
+tool=Claude Code
+model=claude-opus-4-8
+branch=claude/repo-exploration-spec-yy93it
+repo_root=/home/user/GhostTrace
+worktree=main
+parent_agent=none

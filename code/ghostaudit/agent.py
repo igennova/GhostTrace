@@ -20,15 +20,26 @@ from .rules import RuleBook
 from .writer import CaseResult
 
 
+def _authorized_deletion(request: DeletionRequest, intent_classifier) -> bool:
+    """Decide deletion intent: LLM when available, deterministic regex otherwise."""
+    if intent_classifier is not None:
+        try:
+            return intent_classifier.is_deletion(request.request_text)
+        except Exception:  # noqa: BLE001 — any LLM failure falls back to regex
+            pass
+    return status.is_authorized_deletion(request.request_text)
+
+
 def audit_case(
     request: DeletionRequest,
     dataset: Dataset,
     rules: RuleBook,
     index: discovery.EvidenceIndex,
     resolver: IdentityResolver,
+    intent_classifier=None,
 ) -> CaseResult:
     """Audit a single request end to end and return its decided result."""
-    authorized = status.is_authorized_deletion(request.request_text)
+    authorized = _authorized_deletion(request, intent_classifier)
     if not authorized:
         return CaseResult(request.case_id, status.STATUS_NOT_APPLICABLE, [])
 
@@ -50,9 +61,10 @@ def audit_all(
     rules: RuleBook,
     index: discovery.EvidenceIndex,
     resolver: IdentityResolver,
+    intent_classifier=None,
 ) -> list[CaseResult]:
     """Audit every request in the dataset and return all case results."""
     return [
-        audit_case(request, dataset, rules, index, resolver)
+        audit_case(request, dataset, rules, index, resolver, intent_classifier)
         for request in dataset.requests
     ]

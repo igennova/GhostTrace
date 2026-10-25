@@ -204,3 +204,26 @@ branch=claude/repo-exploration-spec-yy93it
 repo_root=/home/user/GhostTrace
 worktree=main
 parent_agent=none
+
+## 2026-10-25T03:45:00Z Wire OpenAI intent (option A) + implement evaluate.py
+
+User Prompt (verbatim, secrets redacted):
+(Decision: go with architecture A — deterministic core + LLM only at boundaries.) Implement code/evaluation/evaluate.py. Run the agent on the cases that have expected output (sample_output.csv) and compare: deletion_status exact match; identifiers/discovered records as SETS (precision/recall); steps_json field-level accuracy AND sequence accuracy with a readable diff for every mismatch. Write evaluation/evaluation_report.md with case-level status accuracy, step/field accuracy, sequence accuracy, >=3 additional owned cases, and failures-found/improvements-made. Run it and show the report.
+
+Agent Response Summary:
+Chose architecture A. Reimplemented llm.py for OpenAI (IntentClassifier: temperature 0, strict JSON, untrusted-text prompt, SHA-256 cache by (model,prompt,text), usage logging to .cache/usage_llm.jsonl, availability gate). Wired an optional intent_classifier through agent.audit_case/audit_all and main.py: LLM intent when OPENAI_API_KEY + SDK present, deterministic regex fallback otherwise (so it still runs keyless here). Switched requirements.txt to openai. Implemented code/evaluation/evaluate.py: runs the agent on sample_deletion_requests.csv vs sample_output.csv; metrics = status accuracy, resource-set P/R/F1, step-set P/R/F1, position-aligned field accuracy, exact sequence accuracy + mean LCS; readable per-case diffs; 3 authored edge cases (tombstone-exposed, active-sync+restorable-backup, non-deletion access) run through the decision+assembly layers; writes code/evaluation/evaluation_report.md. Baseline (regex intent, keyless): status 81.2% (26/32), step precision 94.4% / recall 61.7%, sequence 18.8%. All 3 custom cases PASS. 21 unit tests still pass. Key findings: (a) precision high, recall low -> dominant gap is discovery evidence coverage (empty-COMPLETE + missed findings), not assembly; (b) case_26 misclassified NOT_APPLICABLE by the regex ("confirm the profile is gone") -> concrete justification for LLM intent; (c) ordering/assembly validated where evidence is present.
+
+Actions:
+* Rewrote code/ghostaudit/llm.py (OpenAI IntentClassifier + cache + usage log)
+* Wired intent_classifier through agent.py and main.py (LLM-or-regex)
+* Switched requirements.txt to openai
+* Wrote code/evaluation/evaluate.py and generated code/evaluation/evaluation_report.md
+* Ran evaluator (baseline) and full test suite (21 passed)
+
+Context:
+tool=Claude Code
+model=claude-opus-4-8
+branch=claude/repo-exploration-spec-yy93it
+repo_root=/home/user/GhostTrace
+worktree=main
+parent_agent=none

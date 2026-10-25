@@ -140,3 +140,25 @@ branch=claude/repo-exploration-spec-yy93it
 repo_root=/home/user/GhostTrace
 worktree=main
 parent_agent=none
+
+## 2026-10-25T02:20:00Z Implement treatment.py, recreation.py, retention.py (deterministic)
+
+User Prompt (verbatim, secrets redacted):
+Implement code/treatment.py, code/recreation.py, code/retention.py. Deterministic. Determine every resource's state AS OF audit_at from EVIDENCE; reported_status and log "success" are claims, not proof. treatment: compare each discovered record's actual state vs required treatment (REMAINING_RECORD vs EXPOSED_PII). recreation: from system_activity.csv build the sync/import/export/backup/restore/indexing graph, mark ACTIVE flows at audit_at, flag active paths + restore/backup risks. retention: must-retain records still exist AND only permitted identifiers (tombstone may keep user_id, not name/email/phone/email_hash). Add adversarial tests: (a) deleted-in-primary-but-resurrected-by-sync; (b) retained record holding forbidden email/hash; (c) log claiming deletion complete contradicted by evidence; (d) evidence file with an embedded instruction treated as data. Run all tests, show results. Stop for review.
+
+Agent Response Summary:
+Added discovery.latest_observation_per_resource() to reconcile each resource to its authoritative state at audit_at (latest observed_at wins; same-timestamp ties broken by evidence strength, so a later readback overrides an earlier deletion claim). treatment.py classifies DELETE/REDACT/ANONYMIZE records vs required action -> REPORT_REMAINING_RECORD / REPORT_EXPOSED_PII / compliant, with remediation+verify ops; skips retain/tombstone/flow categories. retention.py checks must-retain records (RETAIN -> VERIFY_RECORD_PRESENT) and tombstones (permitted={stable ref}; forbidden name/email/phone/email_hash -> REPORT_EXPOSED_PII + REDACT_RECORD + VERIFY_RECORD_REDACTED). recreation.py determines flow/backup state from evidence (discovered DATA_FLOW/BACKUP records authoritative), uses system_activity.csv to build the graph and corroborate/discover flows (activity results treated as claims, overridden by evidence); emits REPORT_ACTIVE_DATA_FLOW/REPORT_RESTORE_RISK with disable/block remediation + verify. Added 8 adversarial tests across test_treatment/test_retention/test_recreation covering (a)-(d); all 15 tests pass. End-to-end run on case_11 reproduces the golden answer exactly (search_052 REMAINING, analytics_2034 + support_864 EXPOSED_PII, data_flow_9522 ACTIVE_FLOW, account_4248 compliant/absent, audit_record_9394 retained-present). No LLM.
+
+Actions:
+* Added discovery.latest_observation_per_resource() + evidence-strength ranking
+* Wrote code/ghostaudit/treatment.py, recreation.py, retention.py
+* Wrote tests: test_treatment.py (claim-vs-evidence, injection-as-data), test_retention.py (forbidden-id tombstone), test_recreation.py (active-sync resurrection); 15 passed
+* Validated decision layer end-to-end on case_11 vs golden
+
+Context:
+tool=Claude Code
+model=claude-opus-4-8
+branch=claude/repo-exploration-spec-yy93it
+repo_root=/home/user/GhostTrace
+worktree=main
+parent_agent=none

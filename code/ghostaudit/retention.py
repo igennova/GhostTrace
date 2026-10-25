@@ -67,6 +67,10 @@ def assess_retention(
         category = record.data_category
         if not category:
             continue
+        # Backup archives are a restore-risk concept owned by recreation, not a
+        # retained-record check here.
+        if category == "BACKUP_ARCHIVE":
+            continue
         decision = rules.required_action(category)
         is_tombstone = category == _TOMBSTONE
         is_retain = decision is not None and decision.required_action == ACTION_RETAIN

@@ -59,13 +59,20 @@ def test_deleted_in_primary_but_active_sync_is_flagged() -> None:
 
 
 def test_disabled_flow_and_blocked_backup_not_flagged() -> None:
-    """A disabled connector and a restore-blocked backup are safe."""
+    """A disabled connector and a restore-blocked backup are not active risks.
+
+    They are still returned (so a COMPLETE case can verify the safe state), but
+    carry no finding/remediation and active=False.
+    """
     discovered = [
         _rec("integration_service", "data_flow_2", "DATA_FLOW", STATE_DISABLED),
         _rec("backup_service", "backup_2", "BACKUP_ARCHIVE", STATE_BLOCKED),
     ]
     risks = detect_recreation(discovered, _dataset(), _Identity(set()), "2026-10-01T00:00:00Z")
-    assert risks == []
+    assert all(not r.active for r in risks)
+    assert all(r.finding_operation is None for r in risks)
+    assert {r.verify_operation for r in risks} == {
+        "VERIFY_DATA_FLOW_DISABLED", "VERIFY_RESTORE_BLOCKED"}
 
 
 def test_restorable_backup_is_flagged() -> None:

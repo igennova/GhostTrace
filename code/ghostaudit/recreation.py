@@ -66,23 +66,30 @@ class RecreationRisk:
 
 
 def _data_flow_risk(system_id: str, resource_id: str, evidence_id: str,
-                    basis: str, recent: bool) -> RecreationRisk:
+                    basis: str, recent: bool, active: bool = True) -> RecreationRisk:
+    # The verify op (disabled) is always set — it proves the safe state in a
+    # COMPLETE case and the post-remediation state in an INCOMPLETE one. The
+    # finding/remediation ops are set only when the flow is actually active.
     return RecreationRisk(
         system_id=system_id, resource_id=resource_id, kind=KIND_DATA_FLOW,
-        active=True, evidence_id=evidence_id, basis=basis, recent_activity=recent,
-        finding_operation="REPORT_ACTIVE_DATA_FLOW", finding_state="ACTIVE",
-        remediation_operation="DISABLE_DATA_FLOW", remediation_state="DISABLED",
+        active=active, evidence_id=evidence_id, basis=basis, recent_activity=recent,
+        finding_operation="REPORT_ACTIVE_DATA_FLOW" if active else None,
+        finding_state="ACTIVE" if active else None,
+        remediation_operation="DISABLE_DATA_FLOW" if active else None,
+        remediation_state="DISABLED" if active else None,
         verify_operation="VERIFY_DATA_FLOW_DISABLED", verify_state="DISABLED",
     )
 
 
 def _restore_risk(system_id: str, resource_id: str, evidence_id: str,
-                  basis: str, recent: bool) -> RecreationRisk:
+                  basis: str, recent: bool, active: bool = True) -> RecreationRisk:
     return RecreationRisk(
         system_id=system_id, resource_id=resource_id, kind=KIND_RESTORE,
-        active=True, evidence_id=evidence_id, basis=basis, recent_activity=recent,
-        finding_operation="REPORT_RESTORE_RISK", finding_state="ACTIVE",
-        remediation_operation="BLOCK_RESTORE", remediation_state="BLOCKED",
+        active=active, evidence_id=evidence_id, basis=basis, recent_activity=recent,
+        finding_operation="REPORT_RESTORE_RISK" if active else None,
+        finding_state="ACTIVE" if active else None,
+        remediation_operation="BLOCK_RESTORE" if active else None,
+        remediation_state="BLOCKED" if active else None,
         verify_operation="VERIFY_RESTORE_BLOCKED", verify_state="BLOCKED",
     )
 
@@ -139,22 +146,22 @@ def detect_recreation(
     risks: list[RecreationRisk] = []
     seen: set[str] = set()
 
-    # 1) Evidence-grounded: discovered DATA_FLOW / BACKUP_ARCHIVE records.
+    # 1) Evidence-grounded: discovered DATA_FLOW / BACKUP_ARCHIVE records. Every
+    #    such record is returned (active or safe) so a COMPLETE case can verify
+    #    the safe state; the active flag drives finding/remediation.
     for (system_id, resource_id), record in latest.items():
         kind = _category_kind(record.data_category)
         if kind is None:
             continue
         recent = _recent_activity_for(resource_id, events)
-        if kind == KIND_DATA_FLOW and record.observed_state == STATE_ACTIVE:
+        active = record.observed_state == STATE_ACTIVE
+        if kind == KIND_DATA_FLOW:
             risks.append(_data_flow_risk(system_id, resource_id, record.evidence_id,
-                                         "evidence", recent))
-            seen.add(resource_id)
-        elif kind == KIND_RESTORE and record.observed_state == STATE_ACTIVE:
+                                         "evidence", recent, active))
+        else:  # KIND_RESTORE
             risks.append(_restore_risk(system_id, resource_id, record.evidence_id,
-                                       "evidence", recent))
-            seen.add(resource_id)
-        elif record.observed_state in (STATE_DISABLED, STATE_BLOCKED):
-            seen.add(resource_id)  # explicitly safe; do not re-flag from activity
+                                       "evidence", recent, active))
+        seen.add(resource_id)
 
     # 2) Activity-only flows/backups the evidence did not surface. Treated as a
     #    claim: active unless a later disable/block event appears.

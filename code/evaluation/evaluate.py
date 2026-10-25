@@ -27,7 +27,8 @@ sys.path.insert(0, str(_CODE_DIR))
 _REPO_ROOT = _CODE_DIR.parent
 
 from ghostaudit import (  # noqa: E402
-    agent, discovery, recreation, remediation, retention, status, treatment,
+    accounts, agent, discovery, recreation, remediation, retention, status,
+    treatment,
 )
 from ghostaudit.discovery import DiscoveredRecord  # noqa: E402
 from ghostaudit.identity import IdentityResolver  # noqa: E402
@@ -177,13 +178,15 @@ def evaluate(dataset_dir: str | Path, sample_requests: str | Path,
     index = discovery.build_evidence_index(dataset_dir)
     resolver = IdentityResolver.from_dataset(dataset)
     classifier = load_intent_classifier()
+    account_context = accounts.AccountContext.build(dataset, index, resolver)
 
     requests = load_requests(sample_requests)
     expected = _load_expected(expected_csv)
 
     agg = Aggregate()
     for req in requests:
-        result = agent.audit_case(req, dataset, rules, index, resolver, classifier)
+        result = agent.audit_case(req, dataset, rules, index, resolver, classifier,
+                                  account_context)
         pred_steps = [_step_dict(s) for s in order_steps(list(result.steps))]
         exp = expected.get(req.case_id, {"status": "", "steps": []})
         agg.scores.append(compare_case(

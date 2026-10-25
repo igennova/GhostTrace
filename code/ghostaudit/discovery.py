@@ -1050,6 +1050,30 @@ def discover_by_identifiers(
             if idx not in seen:
                 seen[idx] = seen.get(idx, [])
 
+    return _records_at(index, seen, audit_at)
+
+
+def discover_by_resources(
+    index: EvidenceIndex,
+    resource_ids: set[str],
+    audit_at: str,
+) -> list[DiscoveredRecord]:
+    """Return every observation of the given resources, established by ``audit_at``.
+
+    Used for resources attributed to the subject outside the evidence index
+    (e.g. an account linked through the deletion workflow's own event).
+    """
+    seen: dict[int, list[str]] = {}
+    for resource_id in resource_ids:
+        for idx in index.resource_index.get(resource_id, ()):
+            seen[idx] = []
+    return _records_at(index, seen, audit_at)
+
+
+def _records_at(
+    index: EvidenceIndex, seen: dict[int, list[str]], audit_at: str
+) -> list[DiscoveredRecord]:
+    """Materialize the selected observations that exist at ``audit_at``."""
     results: list[DiscoveredRecord] = []
     for idx, tokens in seen.items():
         o = index.observations[idx]

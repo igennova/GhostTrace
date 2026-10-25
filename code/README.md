@@ -39,6 +39,7 @@ The pipeline is a chain of single-responsibility modules under
 | `loader.py` | Read all CSVs and locate evidence media into a `Dataset`. |
 | `identity.py` | Resolve current + historical identifiers for the subject. |
 | `discovery.py` | Find subject-matching records at/before `audit_at`. |
+| `accounts.py` | Link each subject to its account (evidence, else the workflow's own delete event) and synthesize ABSENT from the latest profile snapshot at `audit_at`. |
 | `rules.py` | Map data category + condition to required treatment. |
 | `treatment.py` | Check each copy: deleted / redacted / anonymized / exposed. |
 | `recreation.py` | Detect active sync and restore paths that recreate data. |

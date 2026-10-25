@@ -861,6 +861,21 @@ def _load_index(cache_path: Path) -> EvidenceIndex | None:
     )
 
 
+def add_observations(index: EvidenceIndex, new_obs: list[Observation]) -> EvidenceIndex:
+    """Append observations (e.g. from vision.py) and re-index them in place.
+
+    Lets verified media extractions flow into the same shared index the text
+    corpus produced, so per-request discovery matches them identically.
+    """
+    start = len(index.observations)
+    index.observations.extend(new_obs)
+    for offset, obs in enumerate(new_obs):
+        idx = start + offset
+        for token in _match_tokens_for_record(obs.identifiers):
+            index.token_index.setdefault(token, []).append(idx)
+    return index
+
+
 def discover_by_identifiers(
     index: EvidenceIndex,
     match_tokens: set[str],

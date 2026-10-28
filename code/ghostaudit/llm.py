@@ -47,6 +47,10 @@ class IntentResult:
     source: str = "llm"  # llm | cache | regex | fallback
 
 
+# Caches and usage logs live at the repository root, whatever the working dir.
+_REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+
+
 @dataclass
 class LLMConfig:
     """Model selection and I/O settings (no secrets)."""
@@ -56,8 +60,8 @@ class LLMConfig:
     base_url_env: str = "OPENAI_BASE_URL"
     temperature: float = 0.0
     max_tokens: int = 300
-    cache_dir: Path = Path(".cache/llm")
-    usage_log_path: Path = Path(".cache/usage_llm.jsonl")
+    cache_dir: Path = _REPO_ROOT / ".cache" / "llm"
+    usage_log_path: Path = _REPO_ROOT / ".cache" / "usage_llm.jsonl"
     extra: dict[str, object] = field(default_factory=dict)
 
 

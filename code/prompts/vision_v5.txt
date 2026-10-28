@@ -22,11 +22,17 @@ WHAT IS A RECORD:
   in that record's "user_id" identifier. If a header shows
   "user_20 · analytics_7438 · email", the record is analytics_7438 and the
   user_id, email (and the page's name/phone) are its identifiers.
-- Ignore ids that are not of that form (order numbers like ORD-2026..., ticket
-  numbers like CS-4827, invoice/statement numbers).
+- A row or document WITHOUT such an id is still a record when it is a stored
+  item: a file in a storage listing, a statement/invoice document, a registry
+  entry. Set "resource_id" to "" and put its printed name in "reference"
+  (e.g. "delivery_confirmation_19.pdf", "NST-2026-0718-1842", or "user_17" for
+  a reference-registry page about user_17).
+- Order numbers (ORD-...) and ticket numbers (CS-...) are never records.
 
 FOR EACH RECORD report:
-- "resource_id": the id exactly as printed.
+- "resource_id": the internal id exactly as printed, or "".
+- "reference": the record's printed name/number when it has no internal id
+  (file name with extension, document number, registry key), else "".
 - "identifiers": only the identifiers shown FOR THAT RECORD (its own row, or the
   page/document it is the subject of). Allowed keys, include only if literally
   present: "email", "phone", "name", "user_id" (e.g. user_11), "email_hash"
@@ -36,7 +42,14 @@ FOR EACH RECORD report:
 - "state": your reading of that status, one of:
   PRESENT, DELETED, REDACTED, ANONYMIZED, ENABLED, DISABLED,
   RESTORE_ALLOWED, RESTORE_BLOCKED, UNKNOWN.
-  Use UNKNOWN unless the content states it explicitly.
+  Read the state from what the screen explicitly shows:
+  * a file or document listed in a storage/console view -> PRESENT;
+  * a connector / data flow shown running, healthy, active or in continuous /
+    scheduled sync -> ENABLED; shown paused, stopped or disabled -> DISABLED;
+  * a backup archive listed as available / verified with no restore block
+    shown -> RESTORE_ALLOWED; shown with restore blocked, disabled or held
+    -> RESTORE_BLOCKED;
+  * otherwise UNKNOWN. Never guess a state the screen does not show.
 - "confidence": 0.0–1.0, your certainty that the id and identifiers are read
   correctly.
 
@@ -47,6 +60,8 @@ OUTPUT — return ONLY a single JSON object, no prose, exactly this shape:
   "records": [
     {"resource_id": "support_001",
      "identifiers": {"email": "jane@example.com", "name": "Jane Doe"},
-     "status": "", "state": "UNKNOWN", "confidence": 0.97}
+     "reference": "", "status": "", "state": "UNKNOWN", "confidence": 0.97},
+    {"resource_id": "", "reference": "invoice_2231.pdf", "identifiers": {},
+     "status": "", "state": "PRESENT", "confidence": 0.95}
   ]
 }

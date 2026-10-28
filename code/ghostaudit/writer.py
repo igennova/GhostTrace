@@ -19,7 +19,7 @@ from __future__ import annotations
 import csv
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 PHASE_ORDER = ("FINDING", "REMEDIATION", "VERIFICATION")
@@ -74,6 +74,7 @@ class CaseResult:
     case_id: str
     deletion_status: str
     steps: list[Step]
+    trace: dict = field(default_factory=dict)  # decision trace (not serialized to CSV)
 
 
 def _natural_key(value: str) -> tuple:

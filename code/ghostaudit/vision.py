@@ -11,7 +11,7 @@ temperature 0 with strict JSON output.
 
 Hard requirements honored here:
 - Document content is treated as UNTRUSTED data; the prompt forbids obeying any
-  instruction embedded in a document (see ``prompts/vision_v1.txt``).
+  instruction embedded in a document (see ``prompts/vision_v5.txt``).
 - Results are cached to disk keyed by ``file_id`` (plus content hash and prompt
   version), so reruns make zero new model calls and output is deterministic.
 - Every extracted identifier is plausibility-checked; values that fail are
@@ -38,8 +38,8 @@ from pathlib import Path
 from . import discovery
 from .loader import Dataset, EvidenceFile
 
-PROMPT_VERSION = "vision_v3"
-_PROMPT_PATH = Path(__file__).resolve().parent.parent / "prompts" / "vision_v3.txt"
+PROMPT_VERSION = "vision_v5"
+_PROMPT_PATH = Path(__file__).resolve().parent.parent / "prompts" / "vision_v5.txt"
 
 # Approximate USD pricing per 1M tokens, for the usage report (override in config).
 _PRICING = {
@@ -68,8 +68,9 @@ _STATE_MAP = {
     "RESTORE_ALLOWED": discovery.STATE_ACTIVE,
     "RESTORE_BLOCKED": discovery.STATE_BLOCKED,
 }
-#: Categories whose state is a flag (enabled / restore allowed); a media row
-#: counts as evidence of their state only when the flag is explicitly shown.
+#: Categories whose state is a flag (enabled / restore allowed). A connector row
+#: counts as evidence of its state only when the flag is explicitly shown; an
+#: unflagged backup row defaults to restorable (see extraction_to_observations).
 _FLAG_STATE_CATEGORIES = {"DATA_FLOW", "BACKUP_ARCHIVE"}
 _FLAG_STATES = {"ENABLED", "DISABLED", "RESTORE_ALLOWED", "RESTORE_BLOCKED"}
 #: States that carry meaning even when a record shows no identifiers.
@@ -98,6 +99,7 @@ class ExtractedRecord:
     status: str = ""
     state: str = "UNKNOWN"
     confidence: float = 0.0
+    reference: str = ""  # printed name when no internal id (file / document no.)
 
 
 @dataclass
@@ -399,6 +401,7 @@ def extraction_to_observations(
     evidence: EvidenceFile,
     prefix_cat: dict[str, str],
     prefix_sys: dict[str, str],
+    aliases: dict[str, "CatalogAlias"] | None = None,
 ) -> list[discovery.Observation]:
     """Convert verified records from one file into index observations.
 
@@ -409,18 +412,31 @@ def extraction_to_observations(
     the ticket's attachment, so it is categorized as ``SUPPORT_ATTACHMENT``.
     """
     obs: list[discovery.Observation] = []
-    for rec in extraction.records:
+    for rec in _resolve_records(extraction.records, aliases or {}):
         prefix = discovery._resource_prefix(rec.resource_id)
-        system_id = prefix_sys.get(prefix)
-        category = prefix_cat.get(prefix)
+        alias = (aliases or {}).get(rec.resource_id.lower())
+        system_id = prefix_sys.get(prefix) or (alias.system_id if alias else None)
+        category = prefix_cat.get(prefix) or (
+            "SUPPORT_ATTACHMENT" if alias and alias.attachment else None)
         if not system_id or not category:
             continue
         if category == "SUPPORT_MESSAGE" and evidence.suffix == ".pdf":
             category = "SUPPORT_ATTACHMENT"
-        if category in _FLAG_STATE_CATEGORIES and rec.state.upper() not in _FLAG_STATES:
+        rec_state = rec.state.upper()
+        if category == "BACKUP_ARCHIVE" and rec_state not in _FLAG_STATES:
+            # An archive listed in a recovery console is restorable unless the
+            # screen shows a block; this can only raise a risk, never mask one.
+            rec_state = "RESTORE_ALLOWED"
+        if category in _FLAG_STATE_CATEGORIES and rec_state not in _FLAG_STATES:
             continue  # its state is a flag the screen did not show (link only)
+        if category not in _FLAG_STATE_CATEGORIES and rec_state in _FLAG_STATES:
+            rec_state = "UNKNOWN"  # enabled/restore flags mean nothing for a data record
         ids = dict(rec.identifiers)
-        state = _STATE_MAP.get(rec.state.upper()) or discovery._state_from_identifiers(ids)
+        state = _STATE_MAP.get(rec_state)
+        if state is None:
+            # A listed item with no identifiers shown is present, not anonymized.
+            state = (discovery.STATE_PRESENT if rec_state == "PRESENT" and not ids
+                     else discovery._state_from_identifiers(ids))
         obs.append(discovery.Observation(
             evidence_id=extraction.file_id,
             origin=evidence.origin,
@@ -444,17 +460,18 @@ def integrate_media(
 ) -> discovery.EvidenceIndex:
     """Merge verified media records into the shared evidence index."""
     prefix_cat, prefix_sys = _prefix_maps(index, dataset)
+    aliases = catalog_aliases(dataset)
     by_id = dataset.evidence_by_id()
     new_obs: list[discovery.Observation] = []
     for extraction in extractions:
         evidence = by_id.get(extraction.file_id)
         if evidence is not None:
             new_obs.extend(extraction_to_observations(
-                extraction, evidence, prefix_cat, prefix_sys))
+                extraction, evidence, prefix_cat, prefix_sys, aliases))
         # Every verified record links its identifiers to its resource id, so
         # text observations of that resource (e.g. a backup's restore flag)
         # are attributed to the subject even when the screen showed no state.
-        for rec in extraction.records:
+        for rec in _resolve_records(extraction.records, aliases):
             if discovery._resource_prefix(rec.resource_id) not in prefix_sys:
                 continue
             for token in discovery._match_tokens_for_record(rec.identifiers):
@@ -462,6 +479,62 @@ def integrate_media(
                 if rec.resource_id not in linked:
                     linked.append(rec.resource_id)
     return discovery.add_observations(index, new_obs)
+
+
+@dataclass(frozen=True)
+class CatalogAlias:
+    """A data-catalog link from a printed name to an internal resource."""
+
+    resource_id: str
+    system_id: str
+    attachment: bool  # catalogued as an attachment belonging to one subject
+
+
+_RE_CATALOG = re.compile(r"(?:linked|confirmed) (\S+) \(([^)]+)\)")
+
+
+def catalog_aliases(dataset: Dataset) -> dict[str, CatalogAlias]:
+    """Map printed names (file names, document numbers, registry keys) to the
+    resources the activity stream's data catalog links them to.
+
+    ``"Data catalog linked export_1842 (NST-2026-0718-1842) to ..."`` makes the
+    statement number an alias of ``export_1842``.
+    """
+    aliases: dict[str, CatalogAlias] = {}
+    for a in dataset.activity:
+        if a.event_type != "LINK_RESOURCE_IDENTITY":
+            continue
+        m = _RE_CATALOG.search(a.details or "")
+        if not m or m.group(1) != a.resource_id:
+            continue
+        entry = CatalogAlias(a.resource_id, a.target_system,
+                             "attachment" in (a.details or "").lower())
+        for key in {m.group(2).strip().lower(), a.resource_id.lower()}:
+            aliases[key] = entry
+    return aliases
+
+
+def _resolve_records(
+    records: list[ExtractedRecord], aliases: dict[str, CatalogAlias]
+) -> list[ExtractedRecord]:
+    """Give reference-only records the internal id the catalog links them to.
+
+    Records whose reference the catalog does not know are dropped: a printed
+    name alone cannot be placed in a system.
+    """
+    resolved: list[ExtractedRecord] = []
+    for rec in records:
+        if rec.resource_id:
+            resolved.append(rec)
+            continue
+        alias = aliases.get(rec.reference.lower())
+        if alias is not None:
+            ids = dict(rec.identifiers)
+            if _RE_USER_ID.match(rec.reference) and rec.reference.startswith("user_"):
+                ids.setdefault("user_id", rec.reference)  # the key shown is the stable ref
+            resolved.append(ExtractedRecord(alias.resource_id, ids, rec.status,
+                                            rec.state, rec.confidence, rec.reference))
+    return resolved
 
 
 def _prefix_maps(
@@ -615,17 +688,22 @@ def _verify_records(
     rejected: list[str] = []
     for raw in raw_records:
         rid = str(raw.get("resource_id") or "").strip()
+        ref = str(raw.get("reference") or "").strip()
         conf = float(raw.get("confidence") or 0.0)
         state = str(raw.get("state") or "UNKNOWN").strip().upper()
-        if not _RE_RESOURCE_ID.match(rid) or rid.startswith("user_"):
-            rejected.append(f"{rid!r}: not an internal resource id")
+        if rid and (not _RE_RESOURCE_ID.match(rid) or rid.startswith("user_")):
+            ref, rid = ref or rid, ""  # a printed name, not an internal id
+        label = rid or ref
+        if not label:
+            rejected.append("record without id or reference")
             continue
         if conf < _LOW_CONFIDENCE_THRESHOLD:
-            rejected.append(f"{rid}: confidence {conf:.2f} below threshold")
+            rejected.append(f"{label}: confidence {conf:.2f} below threshold")
             continue
-        if norm_text is not None and _normalize_for_match(rid) not in norm_text:
-            rejected.append(f"{rid}: id not present in document text")
+        if norm_text is not None and _normalize_for_match(label) not in norm_text:
+            rejected.append(f"{label}: id/reference not present in document text")
             continue
+        rid_for_msgs = label
         ids: dict[str, str] = {}
         for kind, value in (raw.get("identifiers") or {}).items():
             kind = str(kind).lower()
@@ -634,18 +712,20 @@ def _verify_records(
             ident = ExtractedIdentifier(type=kind, value=str(value).strip(), confidence=conf)
             ok, reason = verify_identifier(ident)
             if not ok:
-                rejected.append(f"{rid}.{kind}: {reason}")
+                rejected.append(f"{rid_for_msgs}.{kind}: {reason}")
                 continue
             if norm_text is not None and _normalize_for_match(ident.value) not in norm_text:
-                rejected.append(f"{rid}.{kind}: value not present in document text")
+                rejected.append(f"{rid_for_msgs}.{kind}: value not present in document text")
                 continue
             ids[kind] = ident.value
-        if not (set(ids) - {"name"}) and state not in _SELF_DESCRIBING_STATES:
+        # A reference-only record is resolved through the data catalog later,
+        # which supplies its subject link; an id-only record needs its own.
+        if rid and not (set(ids) - {"name"}) and state not in _SELF_DESCRIBING_STATES:
             rejected.append(f"{rid}: no linkable identifier and no explicit state")
             continue
         records.append(ExtractedRecord(rid, ids, str(raw.get("status") or ""),
                                        state if state in _STATE_MAP or state in
-                                       {"PRESENT", "UNKNOWN"} else "UNKNOWN", conf))
+                                       {"PRESENT", "UNKNOWN"} else "UNKNOWN", conf, ref))
     return records, rejected
 
 

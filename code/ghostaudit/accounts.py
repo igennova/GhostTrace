@@ -225,14 +225,22 @@ def load_profile_snapshots(dataset_dir: str | Path) -> list[ProfileSnapshot]:
 
 
 def authoritative_snapshot(
-    snapshots: list[ProfileSnapshot], audit_at: str
+    snapshots: list[ProfileSnapshot], audit_at: str, not_before: str = ""
 ) -> ProfileSnapshot | None:
-    """The latest account-profile capture available at ``audit_at``."""
+    """The latest account-profile capture available at ``audit_at``.
+
+    With ``not_before`` (the request time) only captures taken after the
+    request qualify: an earlier snapshot shows the account before deletion
+    was asked for and cannot prove its absence.
+    """
     cutoff = _parse_ts(audit_at)
+    floor = _parse_ts(not_before) if not_before else None
     best, best_rank = None, None
     for s in snapshots:
         taken, filed = _parse_ts(s.snapshot_at), _parse_ts(s.file_captured_at)
         if taken is None or cutoff is None or taken > cutoff:
+            continue
+        if floor is not None and taken < floor:
             continue
         if filed is not None and filed > cutoff:
             continue
@@ -278,12 +286,17 @@ def synthesize_absence(
         return []
     if any(r.resource_id == link.resource_id for r in records):
         return []
+    floor = _parse_ts(request.requested_at)
     if context.index is not None:
-        observed = discover_by_resources(
-            context.index, {link.resource_id}, request.audit_at)
+        observed = [
+            r for r in discover_by_resources(
+                context.index, {link.resource_id}, request.audit_at)
+            if floor is None or (_parse_ts(r.captured_at or r.observed_at) or floor) >= floor
+        ]
         if observed:
             return observed
-    snap = authoritative_snapshot(context.snapshots, request.audit_at)
+    snap = authoritative_snapshot(context.snapshots, request.audit_at,
+                                  not_before=request.requested_at)
     if snap is None or link.resource_id in snap.resource_ids:
         return []
     return [DiscoveredRecord(

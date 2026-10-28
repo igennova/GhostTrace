@@ -1,157 +1,207 @@
-# HackerRank Orchestrate - October 2026
+# GhostTrace
 
-## Ghost Data Still Exists
+**Find the personal data a "completed" deletion left behind.**
 
-Build an AI agent that audits whether a user's personal data was actually deleted.
+GhostTrace audits data-deletion requests. A deletion workflow can report
+*Complete* while the person's data still sits in database replicas, logs,
+support attachments, exports, search indexes, analytics, archives and backups,
+or while an active sync or restore quietly puts it back. GhostTrace ignores
+what the workflow *claims* and reconstructs what the evidence *shows*.
 
-A deletion workflow may report **Complete** while data still exists in databases, logs, support attachments, exports, search indexes, archives, or backups. Sync and restore processes may also bring deleted data back.
+For each request it answers three questions:
 
-For each request, the agent must first determine whether deletion was actually requested. It then returns `COMPLETE`, `INCOMPLETE`, or `NOT_APPLICABLE`, reports any remaining data or recreation risk, and produces the ordered remediation and verification steps required to finish an authorized deletion safely.
+1. **Did the person actually ask for deletion?** Access, export, correction and
+   marketing opt-out requests are not deletions.
+2. **Is the deletion really complete** at the audit time, under the company's
+   retention policy?
+3. **If not, what exactly remains, and how do you fix it safely?** It returns an
+   ordered plan of findings, remediation steps and the checks that prove the fix.
 
-Read [`problem_statement.md`](./problem_statement.md) for the complete challenge contract.
+Built for privacy and compliance teams, DPOs and auditors who need to show a
+deletion happened, not just that a job said it did.
 
 ---
 
-## Quick Start
+## How it works
 
-Clone the repository and move into the project directory:
+**Deterministic core, models only at the edges.** Everything that decides a
+verdict or a step is ordinary, testable code. A model is used for exactly two
+jobs that code can't do well:
 
-```bash
-git clone https://github.com/interviewstreet/hackerrank-orchestrate-october26.git
-cd hackerrank-orchestrate-october26
+| Job | Model | Without an API key |
+| --- | --- | --- |
+| Does the request text authorize deletion? (any language) | `gpt-4o-mini`, temperature 0 | Multilingual keyword fallback |
+| What records does a PDF or screenshot show? | `gpt-4o`, temperature 0 | PDFs parsed locally; screenshots skipped unless cached |
+
+Every model result is validated before use and cached on disk, so a rerun makes
+**zero** model calls and reproduces the output byte for byte.
+
+```text
+          request ──► intent check ──► not a deletion? ──► NOT_APPLICABLE
+                           │
+   email ──► identity (current + historical emails, phones, hashes, user id)
+                           │
+  evidence ──► discovery: SQL snapshots · JSON · logs · text · PDFs · screenshots
+                           │       (only what existed at the audit time)
+                           ▼
+              every record of this person, with its state
+                           │
+        ┌──────────────────┼────────────────────┐
+        ▼                  ▼                    ▼
+   treatment          retention            recreation
+ delete / redact /   keep required        active syncs,
+ anonymize vs state  records; tombstone   restorable backups
+                     keeps only user id
+        └──────────────────┼────────────────────┘
+                           ▼
+          COMPLETE / INCOMPLETE  +  ordered plan  +  decision trace
 ```
 
-Start your AI coding tool from the **repository root** so it automatically reads [`AGENTS.md`](./AGENTS.md) and logs your session turns to `log.txt` in the root directory.
+### Principles
 
-Build your solution in `code/main.py`, or use another language and document its setup and run command clearly in your README.
+- **Claims are not proof.** Workflow statuses and activity-log results are
+  claims. State comes from evidence: snapshots, readbacks, documents, screens.
+- **State at a point in time.** Only evidence available at the audit cutoff
+  counts, and only evidence captured after the request can show what happened
+  after it. The latest authoritative observation of a record wins.
+- **Absence must be proved.** A deleted account leaves nothing to match on, so
+  GhostTrace links the account to the person and proves it is gone from a
+  readback or a profile snapshot taken after the request.
+- **Fail toward risk.** A sync or backup counts as able to recreate data unless
+  the evidence shows it disabled or blocked.
+- **Safe remediation order.** Stop data flows and block restores before
+  touching the records they could recreate, and verify every end state.
 
-Your solution must:
+---
 
-- Read the input files from `dataset/`
-- Generate one prediction row for every request in `dataset/deletion_requests.csv`
-- Write the final predictions to `output.csv` in the repository root
-
-Run the starter Python entry point with:
+## Quickstart
 
 ```bash
-python3 code/main.py
+git clone https://github.com/igennova/GhostTrace.git
+cd GhostTrace
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r code/requirements.txt
+cp .env.example .env          # optional: add OPENAI_API_KEY for intent + vision
 ```
 
-The blank template at `dataset/output.csv` is provided as a reference. Your final generated file for submission must be the root-level `output.csv`.
+```bash
+python code/main.py                     # audit every request -> output.csv
+python code/main.py --no-vision         # skip PDF / screenshot evidence
+python -m pytest code/tests -q          # unit and adversarial tests
+python code/evaluation/evaluate.py      # accuracy vs. labelled cases
+python code/evaluation/usage_report.py  # model calls, tokens and cost
+```
 
+`main.py` validates its own output (row count, ordering, allowed operations
+and states, step numbering, phase order) and prints how many model calls the
+run made.
 
-## Dataset
+---
 
-All participant-facing files are in `dataset/`:
+## Input and output
+
+**Input** (`dataset/`):
 
 | File | Contents |
 | --- | --- |
-| `deletion_requests.csv` | 518 requests |
-| `sample_deletion_requests.csv` | 32 sample requests |
-| `sample_output.csv` | Correct sample answers |
-| `user_identities.csv` | Current user identities |
-| `user_audit_log.csv` | Historical identity changes |
-| `system_activity.csv` | Activity across services and data processes |
-| `deletion_rules.csv` | Required treatment for each data category |
-| `evidence_files.csv` | Manifest of supplied evidence files |
-| `output.csv` | Blank output template |
+| `deletion_requests.csv` | `case_id, email, requested_at, reported_status, reported_at, audit_at, request_text` |
+| `user_identities.csv`, `user_audit_log.csv` | Current identities and the history of email / phone / hash changes |
+| `system_activity.csv` | Global stream of deletion, sync, export, backup, restore and catalog events |
+| `deletion_rules.csv` | Required action per data category: delete, redact, anonymize, retain, tombstone |
+| `evidence_files.csv` + `evidence/` | Manifest and files: SQL snapshots, JSON, logs, text, PDFs, screenshots |
 
-Evidence is stored under `dataset/evidence/` and may include PDFs, images, logs, JSON, plain text, or SQL snapshot exports. SQL captures may contain a primary database, regional replicas, a reporting replica, or a failover replica so replication drift can be investigated directly. The `.sql` files are readable as text and executable with SQLite.
+**Output**: `output.csv` with `case_id, deletion_status, steps_json`, where
+`deletion_status` is `COMPLETE`, `INCOMPLETE` or `NOT_APPLICABLE`. Each step is:
 
-Only `deletion_requests.csv` requires answers. The other files provide evidence and context.
+```json
+{"step_no": 1, "phase": "FINDING", "system_id": "account_service",
+ "resource_id": "account_005", "operation": "REPORT_REMAINING_RECORD",
+ "state": "PRESENT", "evidence_id": "evidence_54"}
+```
+
+Phases always run `FINDING → REMEDIATION → VERIFICATION`. Findings cite the
+evidence that proves them; a complete case carries only evidence-backed
+verification steps. Per-case reasoning (evidence used, why each step exists)
+is written to `code/evaluation/decision_traces.jsonl`.
+
+### Example
+
+The workflow reported `account_005` deleted, and the activity log agrees
+(deletion `SUCCESS`, replication checkpoint `SUCCESS`). A failover-replica
+snapshot taken *after* that still holds the full profile. GhostTrace reports
+the remaining record, plans its deletion, and adds the check that proves it's
+gone: **INCOMPLETE**, where a log-trusting audit would have said complete.
 
 ---
 
-## Output
+## Results
 
-Create `output.csv` with these columns in this exact order:
+On 32 labelled cases:
+
+| Metric | Value |
+| --- | --- |
+| Verdict accuracy | **100% (32/32)** |
+| Step precision / recall / F1 | 96.0% / 86.0% / 90.7% |
+| Field-level accuracy | 80.7% |
+| Exact step order | 43.8% (order similarity 82.9%) |
+
+A full audit of 518 requests from an empty cache took 390 model calls
+(375 intent, 15 vision), 171k tokens and about **$0.12** in total, roughly
+$0.0002 per request. Warm reruns make no calls.
+
+Full breakdowns: [`code/evaluation/evaluation_report.md`](code/evaluation/evaluation_report.md)
+and [`code/evaluation/usage_report.md`](code/evaluation/usage_report.md).
+
+---
+
+## Project structure
 
 ```text
-case_id,deletion_status,steps_json
+code/
+  main.py                 CLI: run the audit, validate, write output + traces
+  ghostaudit/
+    loader.py             load CSVs and the evidence manifest
+    identity.py           current + historical identifiers for a person
+    discovery.py          parse text evidence into a shared, cached index
+    vision.py             PDF / screenshot records (model-assisted, verified)
+    accounts.py           link deleted accounts and prove their absence
+    rules.py              policy per data category
+    treatment.py          compare each record's state with its required action
+    retention.py          records that must be kept; tombstone rules
+    recreation.py         active syncs and restorable backups
+    status.py             verdict + deletion-intent fallback
+    remediation.py        ordered findings, fixes and checks
+    writer.py             output schema, ordering, validation
+    llm.py                intent classifier (cached, usage-logged)
+    agent.py              one audit per request, with its decision trace
+  prompts/                versioned model prompts
+  evaluation/             evaluator, reports, decision traces
+  tests/                  unit and adversarial tests
+dataset/                  inputs (see above)
+docs/output_spec.md       detailed output format
 ```
-
-Produce exactly one row per request. `deletion_status` is `COMPLETE`, `INCOMPLETE`, or `NOT_APPLICABLE`. `steps_json` is an ordered JSON array containing findings, remediation actions, and verification checks. Use an empty array (`[]`) for `NOT_APPLICABLE`. Evidence references may be a `file_id`, `activity_id`, or `audit_id`. Determine the resource state at `audit_at` from the available evidence; reported workflow statuses and operation results are claims. Use `dataset/sample_output.csv` as the format reference.
-
-The final file must contain 518 data rows sorted by `case_id` (plus the header row). The grader parses `steps_json` as JSON, so object-key order and whitespace do not matter; array order does. Order findings, remediation, and verification in that phase order. Within a phase, follow the operation order in the problem statement, then sort by `system_id` and `resource_id`.
 
 ---
 
-## Evaluation
+## Limitations
 
-`output.csv` will be compared with hidden canonical answers. Scoring considers:
+- **Ambiguous account links.** When several requests share a reporting window
+  and their deletion events look identical, the account link is a
+  deterministic tie-break and can be wrong.
+- **Silence can look clean.** A missed record produces no finding. A planned
+  change is to require positive proof per system before calling a case
+  complete, and to send gaps to review instead.
+- **Legal-hold expiry isn't evaluated yet.** Holds are always treated as
+  active; expired holds should fall back to the category's normal treatment.
+- **Identifier ownership isn't time-scoped.** A recycled email could match the
+  previous owner's later records; ownership windows from the audit log would
+  close this.
+- **Keyless mode is a draft.** The keyword fallback over-triggers on words like
+  "cancel" or "close", and screenshots are skipped unless cached.
 
-- deletion assessment accuracy;
-- current and historical identity resolution;
-- discovery of remaining data and recreation risks;
-- correct policy application and evidence references; and
-- completeness and ordering of remediation and verification steps.
+## Security
 
-Your `code.zip` must include:
-
-```text
-code/evaluation/evaluation_report.md
-code/evaluation/usage_report.md
-```
-
-- `evaluation_report.md` must cover case, row, field, and sequence accuracy, at least three additional evaluation cases created by you, failures found, and improvements made.
-- `usage_report.md` must cover the final full-dataset run, including model providers and names, model calls, input and output tokens, total and average tokens per request, and estimated total and per-request cost. Include per-model and overall totals when using multiple models.
-
-**Important:** Place `evaluation_report.md` and `usage_report.md` inside `code/evaluation/` (matching `code/evaluation/main.py` in this starter layout), write your complete evaluation metrics, custom evaluation test cases, and token/cost breakdowns directly inside those Markdown files, and keep prompts in source code or Markdown files. Automated code evaluation ignores raw data files (`.csv`, `.tsv`, `.json`, `.jsonl`, `.sql`, `.log`), so content stored only in those formats will not be visible to the code judge or AI interviewer.
-
----
-
-## Chat Transcript
-
-This repository includes [`AGENTS.md`](./AGENTS.md), which instructs compatible AI coding tools to append conversation summaries to `log.txt` in the repository root:
-
-| Platform | Path |
-| --- | --- |
-| macOS / Linux | `<repo root>/log.txt` |
-| Windows | `<repo root>\log.txt` |
-
-- Always launch your AI coding agent from the repository root (or explicitly ask it to read `./AGENTS.md` first) so every turn is logged to `log.txt` with the required `User Prompt`, `Agent Response Summary`, `Actions`, and `Context` sections.
-- Upload `log.txt` directly as your `chat_transcript` submission on HackerRank.
-- Do not include API keys, tokens, credentials, or secrets in prompts, code, configuration, or `log.txt`.
-
----
-
-## Packaging `code.zip` and Submission
-
-| Item | Description |
-| --- | --- |
-| `code.zip` | Runnable solution, prompts, configuration, `README.md`, and `evaluation/` reports |
-| `output.csv` | One answer row for each of the 518 requests in `dataset/deletion_requests.csv` |
-| `chat_transcript` | The root `log.txt` file generated by your coding agent |
-| AI interview | Live explanation of your architecture, approach, and evaluation |
-
-You may use any programming language, model, framework, or retrieval approach. Include clear setup and execution instructions in `README.md` inside `code.zip`.
-
-To package `code.zip` from the repository root without bundling the dataset:
-
-**macOS / Linux:**
-
-```bash
-zip -r code.zip README.md code -x "*/__pycache__/*" "*/.venv/*" "*/venv/*" "*/node_modules/*" "*/.git/*" "*/.DS_Store"
-```
-
-**Windows (PowerShell):**
-
-```powershell
-Compress-Archive -Path README.md, code -DestinationPath code.zip -Force
-```
-
-When packaging `code.zip`:
-
-- Keep your evaluation reports in `code/evaluation/` so they are bundled automatically with `code` (or add `evaluation` to the archive command above if you placed them in a top-level `evaluation/` directory).
-- Do **not** include `dataset/`, virtual environments (`.venv`, `venv`, `node_modules`), or build caches (`__pycache__`). On Windows, keep `.venv` at the repository root (outside `code/`) and remove any `code/__pycache__` folders before running `Compress-Archive`.
-- Do **not** include nested archives (`.zip`, `.tar`, `.gz`, `.tgz`, `.7z`, `.rar`) inside `code.zip` — submissions containing nested archive files will be rejected.
-
-Before submitting, confirm that:
-
-- `output.csv` has the exact header `case_id,deletion_status,steps_json` and contains all 518 data rows sorted by `case_id`;
-- every `steps_json` value is a valid JSON array with consecutive step numbers starting at `1`;
-- findings cite valid evidence IDs, and `COMPLETE` verification steps cite evidence proving the current state;
-- proposed remediation and future verification steps use an empty `evidence_id` (`""`);
-- `code.zip` includes your runnable code, `README.md`, `code/evaluation/evaluation_report.md`, and `code/evaluation/usage_report.md`;
-- `log.txt` follows the `AGENTS.md` turn format and is uploaded to the `chat_transcript` slot; and
-- no API keys, credentials, real personal data, or sensitive configuration values are included.
+- API keys are read from the environment or an uncommitted `.env` only.
+- Evidence content is treated as untrusted data; the vision prompt forbids
+  following instructions embedded in documents or screens.
+- Decision traces record which *kind* of identifier matched, never its value.

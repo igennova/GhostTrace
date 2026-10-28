@@ -1,4 +1,7 @@
-# GhostAudit — Ghost Data Still Exists
+# GhostTrace engine (`ghostaudit`)
+
+This folder holds the audit engine. For the project overview, see the
+[top-level README](../README.md).
 
 An evidence-grounded deletion-audit agent. For every request in
 `dataset/deletion_requests.csv` it decides whether the person actually asked
@@ -92,9 +95,6 @@ a fixed corpus, so a loop would add cost and drift without adding capability.
 
 ## Setup
 
-`code.zip` holds the contents of this `code/` folder: unzip it into `code/`
-at the repository root, next to `dataset/`.
-
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r code/requirements.txt
@@ -116,14 +116,15 @@ python code/evaluation/evaluate.py      # sample-set accuracy -> evaluation_repo
 python code/evaluation/usage_report.py  # usage_report.md from the logged calls
 ```
 
-`main.py` validates `output.csv` against the contract (518 rows, sorted,
-allowed phases/operations/states, consecutive numbering, phase order) and
+`main.py` validates `output.csv` against the output format (one row per
+request, sorted, allowed phases/operations/states, consecutive numbering,
+phase order) and
 prints the number of model calls the run made. Per-case decision traces go to
 `code/evaluation/decision_traces.jsonl`.
 
 ## Results
 
-Public sample set (32 cases with reference answers, `evaluation/evaluate.py`):
+Labelled cases (32 with reference answers, `evaluation/evaluate.py`):
 
 | Metric | Value |
 | --- | --- |
@@ -133,7 +134,7 @@ Public sample set (32 cases with reference answers, `evaluation/evaluate.py`):
 | Sequence accuracy (exact order) | 43.8% (14/32); mean order similarity 82.9% |
 | Authored edge cases | 3/3 pass |
 
-Evaluation set (`output.csv`): 518 rows, contract-valid — 325 INCOMPLETE,
+Full dataset (`output.csv`): 518 rows, format-valid — 325 INCOMPLETE,
 183 COMPLETE, 10 NOT_APPLICABLE; 2,627 steps.
 
 Final full run from an empty cache: 390 model calls (375 intent with
@@ -165,10 +166,10 @@ tokens, cost).
   captured at or after `requested_at`; earlier evidence links identities but
   never decides a record's state.
 
-## Compliance notes
+## Security notes
 
-- Only participant-facing files under `dataset/` are read; no organizer files,
-  golden labels, or case-specific shortcuts.
+- Only the input files under `dataset/` are read; no labels or case-specific
+  shortcuts are used for predictions.
 - Secrets come from the environment (or an uncommitted `.env`) only.
 - Evidence text is treated as untrusted data; the vision prompt forbids
   following instructions embedded in documents.
